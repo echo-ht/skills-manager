@@ -380,6 +380,10 @@ describe("Android Git repository integration", () => {
       (skill) => skill.id === installedAlpha.id
     )!;
     expect(withUpdate.updateStatus).toBe("update_available");
+    expect(
+      checked.snapshot.skills.find((skill) => skill.id === betaId)?.updateStatus
+    ).toBe("local_only");
+    expect(checked.notice).toContain("已跳过");
 
     const updated = await repository.updateRemoteSkills([installedAlpha.id]);
     const updatedSkill = updated.snapshot.skills.find(

@@ -638,7 +638,14 @@ export class AndroidGitRepository {
       const parsed = parseSkillMarkdown(markdown);
       const fallbackName = meta.path.split("/").filter(Boolean).pop() || meta.skill_id;
       const sourceType = meta.source?.type || "local";
-      const persisted = updateStates[id];
+      const hasUpstream = sourceType === "git" && Boolean(meta.source?.ref);
+      const persisted = hasUpstream ? updateStates[id] : null;
+      const defaultUpdateStatus: SkillUpdateStatus =
+        sourceType === "local" || sourceType === "import"
+          ? "local_only"
+          : hasUpstream
+            ? "unknown"
+            : "no_upstream";
       skills.push({
         id,
         name: parsed.name || fallbackName,
@@ -658,7 +665,7 @@ export class AndroidGitRepository {
         content: parsed.body,
         frontmatter: parsed.frontmatter,
         presetIds: [...new Set(presetMap.get(id) ?? [])],
-        updateStatus: persisted?.status ?? (sourceType === "git" ? "unknown" : "local_only"),
+        updateStatus: persisted?.status ?? defaultUpdateStatus,
         lastCheckedAt: persisted?.lastCheckedAt ?? null,
         lastCheckError: persisted?.error ?? null,
       });
@@ -1159,19 +1166,38 @@ export class AndroidGitRepository {
   }
 
   async checkRemoteUpdates(): Promise<MutationResult> {
-    const skills = (await this.loadSkills()).filter(
+    const allSkills = await this.loadSkills();
+    const skipped = allSkills.filter(
+      (skill) => skill.source.type !== "git" || !skill.source.ref
+    );
+    if (skipped.length > 0) {
+      this.setUpdates(
+        skipped.map((skill) => ({
+          id: skill.id,
+          status:
+            skill.source.type === "local" || skill.source.type === "import"
+              ? ("local_only" as const)
+              : ("no_upstream" as const),
+        }))
+      );
+    }
+    const skills = allSkills.filter(
       (skill) => skill.source.type === "git" && skill.source.ref
     );
     if (skills.length === 0) {
       return {
         snapshot: await this.snapshot(),
         pushed: true,
-        notice: "当前没有可从 GitHub 检查更新的 Skill。",
+        notice:
+          skipped.length > 0
+            ? `没有可检查的 GitHub 上游，已跳过 ${skipped.length} 个 Skill。`
+            : "当前没有可检查更新的 Skill。",
       };
     }
 
     const groups = new Map<string, { source: ParsedInstallSource; skills: MobileSkill[] }>();
     const failures: string[] = [];
+    let skippedCount = skipped.length;
     for (const skill of skills) {
       try {
         const source = parseInstallSource(skill.source.ref!);
@@ -1181,10 +1207,9 @@ export class AndroidGitRepository {
         const group = groups.get(key) ?? { source, skills: [] };
         group.skills.push(skill);
         groups.set(key, group);
-      } catch (error) {
-        const message = friendlyGitError(error).message;
-        this.setUpdates([{ id: skill.id, status: "error", error: message }]);
-        failures.push(`${skill.name}: ${message}`);
+      } catch {
+        this.setUpdates([{ id: skill.id, status: "no_upstream", error: null }]);
+        skippedCount++;
       }
     }
 
@@ -1233,12 +1258,12 @@ export class AndroidGitRepository {
       }
     }
 
-    const notice =
-      failures.length > 0
-        ? `检查完成：${updateCount} 个可更新，${failures.length} 个检查失败。`
-        : updateCount > 0
-          ? `发现 ${updateCount} 个可更新的 Skill。`
-          : "所有 GitHub Skill 都是最新版本。";
+    const parts: string[] = [];
+    if (updateCount > 0) parts.push(`发现 ${updateCount} 个可更新的 Skill`);
+    else parts.push("所有可检查的 GitHub Skill 都是最新版本");
+    if (failures.length > 0) parts.push(`${failures.length} 个检查失败`);
+    if (skippedCount > 0) parts.push(`已跳过 ${skippedCount} 个无上游 Skill`);
+    const notice = `${parts.join("，")}。`;
     return { snapshot: await this.snapshot(), pushed: failures.length === 0, notice };
   }
 

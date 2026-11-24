@@ -460,7 +460,7 @@ export function SkillsScreen({
                   <span className="mobile-row-title">{skill.name}</span>
                   {skill.updateStatus === "update_available" ? (
                     <span className="mobile-update-badge">上游有更新</span>
-                  ) : skill.updateStatus === "error" ? (
+                  ) : skill.updateStatus === "error" && skill.source.type === "git" && skill.source.ref ? (
                     <span className="mobile-update-badge mobile-update-error">检查失败</span>
                   ) : null}
                   <span className="mobile-row-description">
@@ -558,11 +558,13 @@ export function SkillDetail({
               <span>
                 {skill.updateStatus === "update_available"
                   ? "上游有更新"
-                  : skill.updateStatus === "error"
-                    ? "检查失败"
-                    : skill.updateStatus === "up_to_date"
-                      ? "已是最新"
-                      : "待检查"}
+                  : skill.updateStatus === "no_upstream"
+                    ? "无上游"
+                    : skill.updateStatus === "error"
+                      ? "检查失败"
+                      : skill.updateStatus === "up_to_date"
+                        ? "已是最新"
+                        : "待检查"}
               </span>
             ) : null}
           </div>

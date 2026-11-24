@@ -13,6 +13,7 @@ export interface SkillSource {
 
 export type SkillUpdateStatus =
   | "local_only"
+  | "no_upstream"
   | "unknown"
   | "up_to_date"
   | "update_available"
