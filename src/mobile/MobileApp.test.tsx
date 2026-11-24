@@ -85,6 +85,27 @@ describe("Android preview navigation", () => {
     expect(container.textContent).not.toContain("应用到 Agent");
   });
 
+  it("preserves the skill search when returning from detail", async () => {
+    await renderApp();
+    const skillsTab = [...container.querySelectorAll<HTMLButtonElement>("nav button")].find(
+      (button) => button.textContent?.includes("Skills")
+    )!;
+    await act(async () => skillsTab.click());
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="搜索 Skills"]')!;
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      setValue.call(search, "playwright");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const row = container.querySelector<HTMLButtonElement>(".mobile-skill-row")!;
+    await act(async () => row.click());
+    const back = container.querySelector<HTMLButtonElement>('button[aria-label="返回"]')!;
+    await act(async () => back.click());
+    expect(
+      container.querySelector<HTMLInputElement>('input[aria-label="搜索 Skills"]')?.value
+    ).toBe("playwright");
+  });
+
   it("creates a preset through the full-screen editor and reflects it immediately", async () => {
     await renderApp();
     const presetsTab = [...container.querySelectorAll<HTMLButtonElement>("nav button")].find(
@@ -108,8 +129,12 @@ describe("Android preview navigation", () => {
     )!;
     await act(async () => {
       save.click();
+      save.click();
       await Promise.resolve();
     });
-    expect(container.textContent).toContain("自动化测试");
+    const created = [...container.querySelectorAll(".mobile-preset-row")].filter((row) =>
+      row.textContent?.includes("自动化测试")
+    );
+    expect(created).toHaveLength(1);
   });
 });

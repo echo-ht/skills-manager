@@ -328,5 +328,16 @@ describe("Android Git repository integration", () => {
     );
     const snapshot = await offline.snapshot();
     expect(snapshot.skills.some((skill) => skill.name === "offline-change")).toBe(true);
+
+    const saved = await offline.saveSkill({
+      name: "offline-edit",
+      description: "edited with no network",
+      tags: ["offline"],
+      content: "# Offline edit\n\nQueue this commit for the next network connection.",
+    });
+    expect(saved.pushed).toBe(false);
+    expect(saved.notice).toContain("已提交到本地 Git");
+    expect(saved.snapshot.skills.some((skill) => skill.name === "offline-edit")).toBe(true);
+    expect(saved.snapshot.sync.phase).not.toBe("dirty");
   });
 });

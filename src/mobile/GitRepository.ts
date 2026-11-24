@@ -312,20 +312,33 @@ export class AndroidGitRepository {
 
     if (await exists(join(repo.dir, ".git"))) {
       onProgress?.("正在连接本地仓库…");
+      let usable = false;
       try {
-        const info = await git.getRemoteInfo({
-          http: nativeGitHttp,
-          url: connection.remoteUrl,
-          onAuth: () => ({ username: "x-access-token", password: repo.token }),
-        });
-        const branch = info.HEAD?.replace("refs/heads/", "") || connection.branch;
-        repo.connection.branch = branch;
+        const head = await git.resolveRef({ fs, dir: repo.dir, ref: "HEAD" });
+        await git.readCommit({ fs, dir: repo.dir, oid: head });
+        usable = true;
       } catch {
-        // The local clone is complete and usable without a network round-trip.
-        // Sync will surface the connection problem while the user can still
-        // read and edit the on-device repository.
+        // A process can die while cloning, leaving a .git directory without a
+        // readable HEAD commit. Replace that partial clone instead of opening
+        // a repository whose reads and writes will fail.
       }
-      return repo;
+      if (usable) {
+        try {
+          const info = await git.getRemoteInfo({
+            http: nativeGitHttp,
+            url: connection.remoteUrl,
+            onAuth: () => ({ username: "x-access-token", password: repo.token }),
+          });
+          const branch = info.HEAD?.replace("refs/heads/", "") || connection.branch;
+          repo.connection.branch = branch;
+        } catch {
+          // The local clone is complete and usable without a network round-trip.
+          // Sync will surface the connection problem while the user can still
+          // read and edit the on-device repository.
+        }
+        return repo;
+      }
+      await removeTree(repo.dir);
     }
 
     onProgress?.("正在读取远端仓库…");
@@ -625,15 +638,15 @@ export class AndroidGitRepository {
   private async fastForwardIfPossible(): Promise<
     "up-to-date" | "updated" | "ahead" | "diverged" | "dirty"
   > {
-    await this.fetchRemote();
-    const [localHead, remoteHead, matrix] = await Promise.all([
+    const [localHead, matrix] = await Promise.all([
       this.localHead(),
-      this.remoteHead(),
       this.statusMatrix(),
     ]);
     if (matrix.some(([, head, workdir, stage]) => head !== workdir || head !== stage)) {
       return "dirty";
     }
+    await this.fetchRemote();
+    const remoteHead = await this.remoteHead();
     if (!localHead || !remoteHead || localHead === remoteHead) return "up-to-date";
     const remoteContainsLocal = await git.isDescendent({
       fs,
@@ -765,7 +778,14 @@ export class AndroidGitRepository {
   }
 
   async mutate(action: () => Promise<void>, message: string): Promise<MutationResult> {
-    const preflight = await this.fastForwardIfPossible();
+    let preflight: "up-to-date" | "updated" | "ahead" | "diverged" | "dirty" | "unreachable";
+    try {
+      preflight = await this.fastForwardIfPossible();
+    } catch (error) {
+      const friendly = friendlyGitError(error);
+      if (friendly.code === "CONFLICT") throw friendly;
+      preflight = "unreachable";
+    }
     if (preflight === "dirty") {
       await this.checkpoint("mobile: commit interrupted local changes");
     }
@@ -785,6 +805,7 @@ export class AndroidGitRepository {
   }
 
   async saveSkill(draft: SkillDraft): Promise<MutationResult> {
+    if (!draft.name.trim()) throw new MobileGitError("Skill 名称不能为空", "INVALID_REPO");
     return this.mutate(async () => {
       const currentSkills = await this.loadSkills();
       const existing = draft.id ? currentSkills.find((skill) => skill.id === draft.id) : null;
@@ -876,6 +897,7 @@ export class AndroidGitRepository {
   }
 
   async savePreset(draft: PresetDraft): Promise<MutationResult> {
+    if (!draft.name.trim()) throw new MobileGitError("Preset 名称不能为空", "INVALID_REPO");
     return this.mutate(async () => {
       const presets = await this.loadPresets(await this.loadSkills());
       const existing = draft.id ? presets.find((preset) => preset.id === draft.id) : null;

@@ -232,9 +232,9 @@ function syncCopy(sync: SyncSummary) {
       };
     default:
       return {
-        title: "同步状态待确认",
-        body: "连接 GitHub 后重新检查。",
-        tone: "info",
+        title: "尚未与远端核对",
+        body: sync.message || "连接 GitHub 后重新检查。",
+        tone: sync.message ? "warning" : "info",
         icon: Cloud,
       };
   }
@@ -342,13 +342,23 @@ export function HomeScreen({
 
 interface SkillsScreenProps {
   snapshot: RepoSnapshot;
+  query: string;
+  filter: "all" | "untagged";
+  onQueryChange: (query: string) => void;
+  onFilterChange: (filter: "all" | "untagged") => void;
   onOpenSkill: (skill: MobileSkill) => void;
   onCreate: () => void;
 }
 
-export function SkillsScreen({ snapshot, onOpenSkill, onCreate }: SkillsScreenProps) {
-  const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<"all" | "untagged">("all");
+export function SkillsScreen({
+  snapshot,
+  query,
+  filter,
+  onQueryChange,
+  onFilterChange,
+  onOpenSkill,
+  onCreate,
+}: SkillsScreenProps) {
   const skills = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase("zh-CN");
     return snapshot.skills.filter((skill) => {
@@ -368,7 +378,7 @@ export function SkillsScreen({ snapshot, onOpenSkill, onCreate }: SkillsScreenPr
         <input
           type="search"
           value={query}
-          onChange={(event) => setQuery(event.target.value)}
+          onChange={(event) => onQueryChange(event.target.value)}
           placeholder="搜索名称、说明或标签"
           aria-label="搜索 Skills"
         />
@@ -377,14 +387,14 @@ export function SkillsScreen({ snapshot, onOpenSkill, onCreate }: SkillsScreenPr
         <button
           type="button"
           className={cn("mobile-chip", filter === "all" && "mobile-chip-selected")}
-          onClick={() => setFilter("all")}
+          onClick={() => onFilterChange("all")}
         >
           全部
         </button>
         <button
           type="button"
           className={cn("mobile-chip", filter === "untagged" && "mobile-chip-selected")}
-          onClick={() => setFilter("untagged")}
+          onClick={() => onFilterChange("untagged")}
         >
           未加标签
         </button>
@@ -430,8 +440,8 @@ export function SkillsScreen({ snapshot, onOpenSkill, onCreate }: SkillsScreenPr
                   className="mobile-button mobile-button-outlined"
                   type="button"
                   onClick={() => {
-                    setQuery("");
-                    setFilter("all");
+                    onQueryChange("");
+                    onFilterChange("all");
                   }}
                 >
                   清除筛选

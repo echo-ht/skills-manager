@@ -97,19 +97,37 @@ export function MobileApp() {
   const [sheet, setSheet] = useState<SheetState | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [theme, setTheme] = useState<MobileTheme>(readTheme);
+  const [skillQuery, setSkillQuery] = useState("");
+  const [skillFilter, setSkillFilter] = useState<"all" | "untagged">("all");
   const noticeTimer = useRef<number | null>(null);
   const routeRef = useRef(route);
   const sheetRef = useRef(sheet);
   const busyRef = useRef(busy);
+  const operationLockRef = useRef(false);
+  const tabScrollRef = useRef<Record<MainTab, number>>({
+    home: 0,
+    skills: 0,
+    presets: 0,
+    settings: 0,
+  });
 
   routeRef.current = route;
   sheetRef.current = sheet;
-  busyRef.current = busy;
 
   const showNotice = (message: string, tone: Notice["tone"]) => {
     if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
     setNotice({ message, tone });
     noticeTimer.current = window.setTimeout(() => setNotice(null), 5200);
+  };
+
+  const beginOperation = () => {
+    if (operationLockRef.current) return false;
+    operationLockRef.current = true;
+    return true;
+  };
+
+  const endOperation = () => {
+    operationLockRef.current = false;
   };
 
   const openRepository = async (
@@ -139,6 +157,14 @@ export function MobileApp() {
       if (result.notice) showNotice(result.notice, "warning");
     } catch (error) {
       const friendly = friendlyGitError(error);
+      setSnapshot((current) =>
+        current
+          ? {
+              ...current,
+              sync: { ...current.sync, phase: "unknown", message: friendly.message },
+            }
+          : current
+      );
       showNotice(friendly.message, friendly.code === "CONFLICT" ? "warning" : "error");
     } finally {
       setSyncing(false);
@@ -171,6 +197,8 @@ export function MobileApp() {
         setBooting(false);
         return;
       }
+      if (!beginOperation()) return;
+      busyRef.current = "boot";
       try {
         const opened = await AndroidGitRepository.connect(saved.remoteUrl, token, setBootMessage);
         if (cancelled) return;
@@ -180,6 +208,9 @@ export function MobileApp() {
           setBootError(messageFor(error));
           setBooting(false);
         }
+      } finally {
+        busyRef.current = null;
+        endOperation();
       }
     }
     boot();
@@ -276,7 +307,36 @@ export function MobileApp() {
     }
   }, [route, snapshot]);
 
+  useEffect(() => {
+    if (route.kind !== "tab") return;
+    const frame = window.requestAnimationFrame(() => {
+      const container =
+        route.tab === "skills" || route.tab === "presets"
+          ? document.querySelector<HTMLElement>(".mobile-list-region")
+          : document.querySelector<HTMLElement>(".mobile-content");
+      if (container) container.scrollTop = tabScrollRef.current[route.tab];
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [route]);
+
+  const captureTabScroll = () => {
+    const current = routeRef.current;
+    if (current.kind !== "tab") return;
+    const container =
+      current.tab === "skills" || current.tab === "presets"
+        ? document.querySelector<HTMLElement>(".mobile-list-region")
+        : document.querySelector<HTMLElement>(".mobile-content");
+    if (container) tabScrollRef.current[current.tab] = container.scrollTop;
+  };
+
+  const goToTab = (tab: MainTab) => {
+    captureTabScroll();
+    setRoute({ kind: "tab", tab });
+  };
+
   const connect = async (remote: string, token: string) => {
+    if (!beginOperation()) return;
+    busyRef.current = "connect";
     setBusy("connect");
     setBootError(null);
     setBootMessage("正在读取远端仓库…");
@@ -286,7 +346,9 @@ export function MobileApp() {
     } catch (error) {
       setBootError(messageFor(error));
     } finally {
+      busyRef.current = null;
       setBusy(null);
+      endOperation();
     }
   };
 
@@ -295,7 +357,8 @@ export function MobileApp() {
     successMessage: string,
     done?: () => void
   ) => {
-    if (busy) return;
+    if (!beginOperation()) return;
+    busyRef.current = "mutation";
     setBusy("mutation");
     try {
       const result = await action();
@@ -305,21 +368,37 @@ export function MobileApp() {
     } catch (error) {
       showNotice(messageFor(error), "error");
     } finally {
+      busyRef.current = null;
       setBusy(null);
+      endOperation();
     }
   };
 
   const syncNow = async () => {
-    if (!repo || syncing || busy) return;
+    if (!repo || !beginOperation()) return;
+    busyRef.current = "sync";
+    setBusy("sync");
     setSyncing(true);
     try {
       const result = await repo.sync();
       setSnapshot(result.snapshot);
       showNotice(result.notice || "仓库已同步", result.notice ? "warning" : "success");
     } catch (error) {
-      showNotice(messageFor(error), "error");
+      const friendly = friendlyGitError(error);
+      setSnapshot((current) =>
+        current
+          ? {
+              ...current,
+              sync: { ...current.sync, phase: "unknown", message: friendly.message },
+            }
+          : current
+      );
+      showNotice(friendly.message, "error");
     } finally {
       setSyncing(false);
+      busyRef.current = null;
+      setBusy(null);
+      endOperation();
     }
   };
 
@@ -342,18 +421,24 @@ export function MobileApp() {
   };
 
   const disconnect = async () => {
-    if (!repo) return;
+    if (!repo || !beginOperation()) return;
+    busyRef.current = "disconnect";
     setBusy("disconnect");
-    const remoteUrl = repo.connection.remoteUrl;
-    await clearToken(remoteUrl);
-    clearConnection();
-    setSheet(null);
-    setRepo(null);
-    setSnapshot(null);
-    setBooting(false);
-    setInitialRemote(remoteUrl);
-    setBusy(null);
-    showNotice("已断开远程仓库。本地 Git 副本仍保留在应用私有存储中。", "success");
+    try {
+      const remoteUrl = repo.connection.remoteUrl;
+      await clearToken(remoteUrl);
+      clearConnection();
+      setSheet(null);
+      setRepo(null);
+      setSnapshot(null);
+      setBooting(false);
+      setInitialRemote(remoteUrl);
+      showNotice("已断开远程仓库。本地 Git 副本仍保留在应用私有存储中。", "success");
+    } finally {
+      busyRef.current = null;
+      setBusy(null);
+      endOperation();
+    }
   };
 
   if (booting && !snapshot) {
@@ -428,16 +513,24 @@ export function MobileApp() {
         ) : activeTab === "skills" ? (
           <SkillsScreen
             snapshot={snapshot}
+            query={skillQuery}
+            filter={skillFilter}
+            onQueryChange={setSkillQuery}
+            onFilterChange={setSkillFilter}
             onCreate={() => setSheet({ kind: "skill", skill: null })}
-            onOpenSkill={(skill) => setRoute({ kind: "skill", id: skill.id, from: "skills" })}
+            onOpenSkill={(skill) => {
+              captureTabScroll();
+              setRoute({ kind: "skill", id: skill.id, from: "skills" });
+            }}
           />
         ) : activeTab === "presets" ? (
           <PresetsScreen
             snapshot={snapshot}
             onCreate={() => setSheet({ kind: "preset", preset: null })}
-            onOpenPreset={(preset) =>
-              setRoute({ kind: "preset", id: preset.id, from: "presets" })
-            }
+            onOpenPreset={(preset) => {
+              captureTabScroll();
+              setRoute({ kind: "preset", id: preset.id, from: "presets" });
+            }}
           />
         ) : activeTab === "settings" ? (
           <SettingsScreen
@@ -454,8 +547,8 @@ export function MobileApp() {
             snapshot={snapshot}
             syncing={syncing || busy === "mutation"}
             onSync={() => void syncNow()}
-            onOpenSkills={() => setRoute({ kind: "tab", tab: "skills" })}
-            onOpenPresets={() => setRoute({ kind: "tab", tab: "presets" })}
+            onOpenSkills={() => goToTab("skills")}
+            onOpenPresets={() => goToTab("presets")}
           />
         )}
       </div>
@@ -471,7 +564,7 @@ export function MobileApp() {
                 key={tab.key}
                 className={cn(selected && "mobile-nav-selected")}
                 aria-current={selected ? "page" : undefined}
-                onClick={() => setRoute({ kind: "tab", tab: tab.key })}
+                onClick={() => goToTab(tab.key)}
               >
                 <span>
                   <Icon size={23} />
