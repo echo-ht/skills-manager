@@ -1,0 +1,106 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "android-v*"
+    paths:
+      - "src/**"
+      - "android/**"
+      - "android-assets/**"
+      - "index.html"
+      - "package.json"
+      - "package-lock.json"
+      - "vite.config.ts"
+      - "capacitor.config.ts"
+      - ".github/workflows/android.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "android/**"
+      - "android-assets/**"
+      - "index.html"
+      - "package.json"
+      - "package-lock.json"
+      - "vite.config.ts"
+      - "capacitor.config.ts"
+      - ".github/workflows/android.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify frontend
+        run: |
+          npm run lint
+          npm test
+
+      - name: Build web assets and sync Capacitor
+        run: npm run android:sync
+
+      - name: Stamp app version
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          VERSION_CODE=$(node -e "const [a,b,c]=require('./package.json').version.split('.').map(Number); console.log(a*10000+b*100+c)")
+          sed -i -E "s/versionCode [0-9]+/versionCode ${VERSION_CODE}/" android/app/build.gradle
+          sed -i -E "s/versionName \"[^\"]+\"/versionName \"${VERSION}\"/" android/app/build.gradle
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Build APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleDebug
+
+      - name: Name artifact
+        shell: bash
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk "skills-manager-android-debug.apk"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: skills-manager-android-debug
+          path: skills-manager-android-debug.apk
+          retention-days: 14
+          if-no-files-found: error

@@ -53,7 +53,10 @@ function detectLanguage(): SupportedLanguage {
 
 export const i18nReady = (async () => {
   const storedLanguage = getStoredLanguage();
-  const savedLanguage = await getSettings("language").catch(() => null);
+  const savedLanguage =
+    "__TAURI_INTERNALS__" in window
+      ? await getSettings("language").catch(() => null)
+      : null;
   const lng = isSupportedLanguage(savedLanguage)
     ? savedLanguage
     : storedLanguage || detectLanguage();

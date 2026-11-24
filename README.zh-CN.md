@@ -104,6 +104,18 @@ scoop install extras/skills-manager
 
 所有安装包都自带 CLI，位置见 [二进制放在哪](#二进制放在哪)。
 
+## Android（远程仓库管理）
+
+Android 版用于在手机上管理同一份 Git 技能仓库，不包含桌面端的 Agent 部署功能。应用会保留真实本地 Git 副本，Skill / Preset 的编辑会先形成 commit，再自动尝试 push；断网时改动仍保存在本地，可在恢复后重试。
+
+Android APK 由 GitHub Actions 构建，无需在本地配置 Android SDK：
+
+1. 打开仓库的 **Actions → Build Android APK**。
+2. 点击 **Run workflow**。
+3. 下载 `skills-manager-android-debug` artifact 中的 APK。
+
+首次连接需要仓库地址与具有 Contents 读写权限的 GitHub fine-grained PAT。`git@github.com:owner/repo.git` 会被规范化为 HTTPS，token 保存在 Android 安全存储中。详见 [ANDROID.md](ANDROID.md)。
+
 ## 快速上手
 
 1. 从本地目录、Git 仓库、压缩包或市场安装 Skills。

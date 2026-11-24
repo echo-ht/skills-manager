@@ -1,4 +1,6 @@
+import { lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { Capacitor } from "@capacitor/core";
 import { Toaster } from "sonner";
 import { AppProvider } from "./context/AppContext";
 import { ThemeProvider, useThemeContext } from "./context/ThemeContext";
@@ -15,6 +17,16 @@ import { InstallSkills } from "./views/InstallSkills";
 import { Settings } from "./views/Settings";
 import { ProjectDetail } from "./views/ProjectDetail";
 import { Backup } from "./views/Backup";
+
+const MobileApp = lazy(() =>
+  import("./mobile/MobileApp").then((module) => ({ default: module.MobileApp }))
+);
+
+function shouldOpenMobileApp() {
+  if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android") return true;
+  const params = new URLSearchParams(window.location.search);
+  return params.has("mobilePreview") || (import.meta.env.DEV && params.has("mobile"));
+}
 
 function ThemedToaster() {
   const { resolvedTheme } = useThemeContext();
@@ -34,6 +46,20 @@ function ThemedToaster() {
 }
 
 function App() {
+  if (shouldOpenMobileApp()) {
+    return (
+      <Suspense
+        fallback={
+          <div className="flex h-full w-full items-center justify-center bg-background text-[13px] text-muted">
+            Loading…
+          </div>
+        }
+      >
+        <MobileApp />
+      </Suspense>
+    );
+  }
+
   return (
     <ThemeProvider>
       <AppProvider>

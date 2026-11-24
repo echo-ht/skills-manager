@@ -108,6 +108,18 @@ scoop install extras/skills-manager
 
 Every installer ships the CLI inside the app — see [Where the binary lives](#where-the-binary-lives).
 
+## Android (remote repository manager)
+
+The Android app manages the same Git-backed skills repository from a phone. It intentionally omits desktop Agent deployment: it keeps a real local Git clone, turns Skill and Preset edits into commits, and pushes them automatically. A failed push leaves the commit safely on-device for retry.
+
+APKs are built by GitHub Actions, so no local Android SDK setup is required:
+
+1. Open **Actions → Build Android APK**.
+2. Run the workflow.
+3. Download the APK from the `skills-manager-android-debug` artifact.
+
+Connecting requires a GitHub fine-grained PAT with repository Contents read/write access. SSH repository URLs are normalized to HTTPS, and the token is stored in Android secure storage. See [ANDROID.md](ANDROID.md).
+
 ## Quick Start
 
 1. Install skills from local folders, Git repositories, archives, or the marketplace.

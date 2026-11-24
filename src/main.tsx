@@ -7,7 +7,9 @@ import App from "./App.tsx";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 
 await i18nReady;
-logStartupEvent("i18n_ready", performance.now()).catch(() => {});
+if ("__TAURI_INTERNALS__" in window) {
+  logStartupEvent("i18n_ready", performance.now()).catch(() => {});
+}
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
@@ -16,4 +18,6 @@ createRoot(document.getElementById("root")!).render(
     </ErrorBoundary>
   </StrictMode>
 );
-logStartupEvent("root_rendered", performance.now()).catch(() => {});
+if ("__TAURI_INTERNALS__" in window) {
+  logStartupEvent("root_rendered", performance.now()).catch(() => {});
+}
