@@ -103,6 +103,7 @@ body.mobile-body #root {
 .mobile-screen,
 .mobile-connect,
 .mobile-loading-screen {
+  height: 100dvh;
   min-height: 100dvh;
   color: var(--md-text);
   background: var(--md-bg);
@@ -110,16 +111,21 @@ body.mobile-body #root {
 
 .mobile-shell {
   position: relative;
+  height: 100dvh;
+  overflow: hidden;
 }
 
 .mobile-stage {
-  min-height: 100dvh;
+  height: 100dvh;
+  overflow: hidden;
 }
 
 .mobile-screen {
   display: flex;
+  height: 100dvh;
   min-height: 100dvh;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .mobile-appbar {
@@ -202,10 +208,14 @@ body.mobile-body #root {
   display: flex;
   width: 100%;
   max-width: 920px;
+  min-height: 0;
   flex: 1;
   flex-direction: column;
   gap: 24px;
   align-self: center;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   padding: 20px 16px calc(var(--mobile-nav-height) + env(safe-area-inset-bottom, 0px) + 24px);
 }
 
@@ -1380,12 +1390,17 @@ body.mobile-body #root {
   display: flex;
   width: 100%;
   max-width: 640px;
+  height: 100dvh;
   min-height: 100dvh;
   flex-direction: column;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 24px;
   margin: 0 auto;
-  padding: calc(env(safe-area-inset-top, 0px) + 28px) 18px calc(env(safe-area-inset-bottom, 0px) + 24px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: calc(env(safe-area-inset-top, 0px) + max(28px, 7vh)) 18px
+    calc(env(safe-area-inset-bottom, 0px) + 24px);
 }
 
 .mobile-connect-brand {
@@ -1510,8 +1525,12 @@ body.mobile-body #root {
 
 .mobile-loading-screen {
   display: flex;
+  height: 100dvh;
   flex-direction: column;
   gap: 28px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   padding: calc(env(safe-area-inset-top, 0px) + 28px) 18px 24px;
   color: var(--md-text-muted);
 }
