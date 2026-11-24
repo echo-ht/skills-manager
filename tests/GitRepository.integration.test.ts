@@ -28,10 +28,13 @@ const presetId = "33333333-3333-4333-8333-333333333333";
 
 let tempRoot = "";
 let remoteDir = "";
+let communityWork = "";
+let communityRemote = "";
 let server: ReturnType<typeof createServer> | null = null;
 let repository: AndroidGitRepository;
 let RepositoryClass: typeof AndroidGitRepository;
 let serverUrl = "";
+let localHttpBase = "";
 let liveHttpRequest: (options: HttpOptions) => Promise<HttpResponse>;
 
 Object.defineProperty(globalThis, "navigator", {
@@ -62,10 +65,11 @@ function runGit(args: string[], cwd?: string): string {
 }
 
 async function writeSkillSeed(root: string, id: string, name: string) {
+  const skillName = name.split("/").filter(Boolean).pop() || name;
   await mkdir(pathJoin(root, name), { recursive: true });
   await writeFile(
     pathJoin(root, name, "SKILL.md"),
-    `---\nname: "${name}"\ndescription: "${name} test skill"\n---\n\n# ${name}\n`
+    `---\nname: "${skillName}"\ndescription: "${skillName} test skill"\n---\n\n# ${skillName}\n`
   );
   await mkdir(pathJoin(root, ".skills-manager", "skills"), { recursive: true });
   await writeFile(
@@ -142,6 +146,20 @@ async function seedRemote() {
   runGit(["--git-dir", remoteDir, "symbolic-ref", "HEAD", "refs/heads/main"]);
   runGit(["remote", "add", "origin", remoteDir], work);
   runGit(["push", "origin", "main"], work);
+
+  communityWork = pathJoin(tempRoot, "community-work");
+  await writeSkillSeed(communityWork, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "skills/remote-alpha");
+  await writeSkillSeed(communityWork, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "skills/remote-beta");
+  runGit(["init", "-b", "main"], communityWork);
+  runGit(["config", "user.name", "Community Author"], communityWork);
+  runGit(["config", "user.email", "community@skills-manager.local"], communityWork);
+  runGit(["add", "-A"], communityWork);
+  runGit(["commit", "-m", "seed community skills"], communityWork);
+  communityRemote = pathJoin(tempRoot, "remotes", "community.git");
+  runGit(["init", "--bare", "-b", "main", communityRemote]);
+  runGit(["--git-dir", communityRemote, "config", "http.receivepack", "true"]);
+  runGit(["remote", "add", "origin", communityRemote], communityWork);
+  runGit(["push", "origin", "main"], communityWork);
 }
 
 async function startGitHttpServer(): Promise<number> {
@@ -196,7 +214,9 @@ async function startGitHttpServer(): Promise<number> {
     }
   });
   await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
-  return (server.address() as AddressInfo).port;
+  const port = (server.address() as AddressInfo).port;
+  localHttpBase = `http://127.0.0.1:${port}`;
+  return port;
 }
 
 beforeAll(async () => {
@@ -209,7 +229,11 @@ beforeAll(async () => {
     const body = options.data
       ? Buffer.from(String(options.data), "base64")
       : undefined;
-    const response = await fetch(options.url, {
+    const upstreamUrl = options.url.replace(
+      "https://github.com/test/",
+      `${localHttpBase}/`
+    );
+    const response = await fetch(upstreamUrl, {
       method: options.method,
       headers: options.headers,
       body,
@@ -312,6 +336,58 @@ describe("Android Git repository integration", () => {
     expect(
       runGit(["--git-dir", remoteDir, "show", "main:offline-change/SKILL.md"])
     ).toContain("The local commit must survive.");
+  });
+
+  it("installs a skill from another GitHub repository and follows upstream updates", async () => {
+    const preview = await repository.previewRemoteSkills(
+      "https://github.com/test/community.git"
+    );
+    expect(preview.skills.map((skill) => skill.name).sort()).toEqual([
+      "remote-alpha",
+      "remote-beta",
+    ]);
+    const alphaPreview = preview.skills.find((skill) => skill.name === "remote-alpha")!;
+
+    const installed = await repository.installRemoteSkills(preview, [
+      { relPath: alphaPreview.relPath, name: alphaPreview.name },
+    ]);
+    const installedAlpha = installed.snapshot.skills.find(
+      (skill) => skill.name === "remote-alpha"
+    )!;
+    expect(installedAlpha.source.type).toBe("git");
+    expect(installedAlpha.source.ref).toBe("https://github.com/test/community.git");
+    expect(installedAlpha.source.subpath).toBe("skills/remote-alpha");
+    expect(installedAlpha.updateStatus).toBe("up_to_date");
+
+    await repository.saveSkill({
+      id: installedAlpha.id,
+      name: installedAlpha.name,
+      description: installedAlpha.description ?? "",
+      tags: ["keep-me"],
+      content: installedAlpha.content,
+    });
+
+    await writeFile(
+      pathJoin(communityWork, "skills", "remote-alpha", "SKILL.md"),
+      '---\nname: "remote-alpha"\ndescription: "updated upstream"\n---\n\n# Updated upstream\n'
+    );
+    runGit(["add", "-A"], communityWork);
+    runGit(["commit", "-m", "update remote alpha"], communityWork);
+    runGit(["push", "origin", "main"], communityWork);
+
+    const checked = await repository.checkRemoteUpdates();
+    const withUpdate = checked.snapshot.skills.find(
+      (skill) => skill.id === installedAlpha.id
+    )!;
+    expect(withUpdate.updateStatus).toBe("update_available");
+
+    const updated = await repository.updateRemoteSkills([installedAlpha.id]);
+    const updatedSkill = updated.snapshot.skills.find(
+      (skill) => skill.id === installedAlpha.id
+    )!;
+    expect(updatedSkill.updateStatus).toBe("up_to_date");
+    expect(updatedSkill.content).toContain("Updated upstream");
+    expect(updatedSkill.tags).toEqual(["keep-me"]);
   });
 
   it("opens an existing clone when the network is unavailable", async () => {

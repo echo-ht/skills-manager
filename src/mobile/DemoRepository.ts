@@ -5,6 +5,8 @@ import {
   type MobileSkill,
   type MutationResult,
   type PresetDraft,
+  type RemoteInstallSession,
+  type RemoteSkillInstallItem,
   type RepoConnection,
   type RepoSnapshot,
   type SkillDraft,
@@ -32,10 +34,20 @@ function skill(
     pathKey: name.toLocaleLowerCase("en-US"),
     enabled: true,
     tags,
-    source: { type: "git", ref: "echo-ht/skills-demo", subpath: name, branch: "main" },
+    source: {
+      type: "git",
+      ref: "echo-ht/skills-demo",
+      resolved: "https://github.com/echo-ht/skills-demo.git",
+      subpath: name,
+      branch: "main",
+      revision: "89d45f61c2e4e6d3e7aa08d4e4f42161c39bd010",
+    },
     content: `# ${name}\n\n${description}\n\n## When to use\n\nUse this skill when the task benefits from a focused, repeatable workflow.\n\n## Workflow\n\n1. Inspect the available context.\n2. Make the smallest complete change.\n3. Verify the result and report what changed.`,
     frontmatter: null,
     presetIds,
+    updateStatus: "up_to_date",
+    lastCheckedAt: Date.now() - 1000 * 60 * 5,
+    lastCheckError: null,
   };
 }
 
@@ -165,10 +177,20 @@ export class DemoRepository implements MobileRepository {
       pathKey: existing?.pathKey || draft.name.trim().toLocaleLowerCase("en-US").replace(/\s+/g, "-"),
       enabled: existing?.enabled ?? true,
       tags: draft.tags,
-      source: existing?.source ?? { type: "local", ref: null, subpath: null, branch: null },
+      source: existing?.source ?? {
+        type: "local",
+        ref: null,
+        resolved: null,
+        subpath: null,
+        branch: null,
+        revision: null,
+      },
       content: draft.content,
       frontmatter: existing?.frontmatter ?? null,
       presetIds: existing?.presetIds ?? [],
+      updateStatus: existing?.updateStatus ?? "local_only",
+      lastCheckedAt: existing?.lastCheckedAt ?? null,
+      lastCheckError: null,
     };
     this.state.skills = existing
       ? this.state.skills.map((item) => (item.id === id ? next : item))
@@ -261,5 +283,98 @@ export class DemoRepository implements MobileRepository {
       return { ...preset, skillIds: ids };
     });
     return this.result();
+  }
+
+  async previewRemoteSkills(repoUrl: string): Promise<RemoteInstallSession> {
+    return {
+      originalUrl: repoUrl,
+      cloneUrl: "https://github.com/example/community-skills.git",
+      owner: "example",
+      repo: "community-skills",
+      branch: "main",
+      subpath: null,
+      revision: "preview-revision",
+      tempDir: "/demo/remote-preview",
+      skills: [
+        {
+          relPath: "skills/remote-review",
+          name: "remote-review",
+          description: "从 GitHub 仓库预览到的 Skill",
+        },
+        {
+          relPath: "skills/release-notes",
+          name: "release-notes",
+          description: "生成结构化发布说明",
+        },
+      ],
+    };
+  }
+
+  async cancelRemotePreview(): Promise<void> {}
+
+  async installRemoteSkills(
+    session: RemoteInstallSession,
+    items: RemoteSkillInstallItem[]
+  ): Promise<MutationResult> {
+    const added = items.map((item) =>
+      skill(
+        newId(),
+        item.name,
+        session.skills.find((skill) => skill.relPath === item.relPath)?.description ?? "",
+        ["github"],
+        []
+      )
+    );
+    for (const item of added) {
+      item.source = {
+        type: "git",
+        ref: session.originalUrl,
+        resolved: session.cloneUrl,
+        subpath: session.skills.find((skill) => skill.name === item.name)?.relPath ?? null,
+        branch: session.branch,
+        revision: session.revision,
+      };
+      item.updateStatus = "up_to_date";
+    }
+    this.state.skills = [...added, ...this.state.skills];
+    return this.result();
+  }
+
+  async checkRemoteUpdates(): Promise<MutationResult> {
+    const candidates = this.state.skills.filter((item) => item.source.type === "git");
+    if (candidates[0]) {
+      this.state.skills = this.state.skills.map((item) =>
+        item.id === candidates[0].id
+          ? {
+              ...item,
+              updateStatus: "update_available",
+              lastCheckedAt: Date.now(),
+            }
+          : item
+      );
+    }
+    return {
+      snapshot: this.state,
+      pushed: true,
+      notice: candidates.length ? "发现 1 个可更新的 Skill。" : "没有可检查的 GitHub Skill。",
+    };
+  }
+
+  async updateRemoteSkills(skillIds: string[]): Promise<MutationResult> {
+    const ids = new Set(skillIds);
+    this.state.skills = this.state.skills.map((item) =>
+      ids.has(item.id)
+        ? {
+            ...item,
+            updateStatus: "up_to_date",
+            lastCheckedAt: Date.now(),
+            content: `${item.content}\n\n<!-- updated from upstream -->`,
+          }
+        : item
+    );
+    return {
+      ...this.result(),
+      notice: `已更新 ${ids.size} 个 GitHub Skill。`,
+    };
   }
 }

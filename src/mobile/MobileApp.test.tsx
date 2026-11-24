@@ -106,6 +106,77 @@ describe("Android preview navigation", () => {
     ).toBe("playwright");
   });
 
+  it("installs selected skills from another GitHub repository", async () => {
+    await renderApp();
+    const skillsTab = [...container.querySelectorAll<HTMLButtonElement>("nav button")].find(
+      (button) => button.textContent?.includes("Skills")
+    )!;
+    await act(async () => skillsTab.click());
+    const openInstaller = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent?.includes("从 GitHub 安装")
+    )!;
+    await act(async () => openInstaller.click());
+
+    const url = container.querySelector<HTMLInputElement>(
+      'input[placeholder="https://github.com/owner/repo"]'
+    )!;
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      setValue.call(url, "https://github.com/example/community-skills");
+      url.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const preview = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent?.includes("预览仓库")
+    )!;
+    await act(async () => {
+      preview.click();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain("remote-review");
+
+    const install = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent?.includes("安装 2 个")
+    )!;
+    await act(async () => {
+      install.click();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain("remote-review");
+    expect(container.textContent).toContain("release-notes");
+  });
+
+  it("checks and applies upstream updates", async () => {
+    await renderApp();
+    const skillsTab = [...container.querySelectorAll<HTMLButtonElement>("nav button")].find(
+      (button) => button.textContent?.includes("Skills")
+    )!;
+    await act(async () => skillsTab.click());
+    const check = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent?.includes("检查更新")
+    )!;
+    await act(async () => {
+      check.click();
+      await Promise.resolve();
+    });
+    const updateAll = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent?.includes("更新 1 个")
+    )!;
+    expect(updateAll).toBeTruthy();
+    await act(async () => updateAll.click());
+    const confirm = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent?.includes("更新并同步")
+    )!;
+    await act(async () => {
+      confirm.click();
+      await Promise.resolve();
+    });
+    expect(
+      [...container.querySelectorAll(".mobile-update-badge")].some((badge) =>
+        badge.textContent?.includes("上游有更新")
+      )
+    ).toBe(false);
+  });
+
   it("creates a preset through the full-screen editor and reflects it immediately", async () => {
     await renderApp();
     const presetsTab = [...container.querySelectorAll<HTMLButtonElement>("nav button")].find(

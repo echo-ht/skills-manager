@@ -26,13 +26,17 @@ import {
   type MobileTheme,
 } from "./MobileScreens";
 import { MobileConfirmDialog, PresetEditor, SkillEditor } from "./MobileEditors";
+import { RemoteInstaller } from "./MobileRemoteInstaller";
 import {
+  MobileGitError,
   friendlyGitError,
   type MobilePreset,
   type MobileRepository,
   type MobileSkill,
   type PresetDraft,
   type RepoSnapshot,
+  type RemoteInstallSession,
+  type RemoteSkillInstallItem,
   type SkillDraft,
 } from "./model";
 import {
@@ -56,6 +60,8 @@ type SheetState =
   | { kind: "preset"; preset: MobilePreset | null }
   | { kind: "delete-skill"; skill: MobileSkill }
   | { kind: "delete-preset"; preset: MobilePreset }
+  | { kind: "remote-install" }
+  | { kind: "update-skills"; skillIds: string[] }
   | { kind: "disconnect" };
 
 interface Notice {
@@ -93,6 +99,7 @@ export function MobileApp() {
   const [initialRemote, setInitialRemote] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [route, setRoute] = useState<Route>({ kind: "tab", tab: "home" });
   const [sheet, setSheet] = useState<SheetState | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -356,8 +363,8 @@ export function MobileApp() {
     action: () => Promise<{ snapshot: RepoSnapshot; pushed: boolean; notice: string | null }>,
     successMessage: string,
     done?: () => void
-  ) => {
-    if (!beginOperation()) return;
+  ): Promise<boolean> => {
+    if (!beginOperation()) return false;
     busyRef.current = "mutation";
     setBusy("mutation");
     try {
@@ -365,9 +372,63 @@ export function MobileApp() {
       setSnapshot(result.snapshot);
       done?.();
       showNotice(result.notice || successMessage, result.notice ? "warning" : "success");
+      return true;
+    } catch (error) {
+      showNotice(messageFor(error), "error");
+      return false;
+    } finally {
+      busyRef.current = null;
+      setBusy(null);
+      endOperation();
+    }
+  };
+
+  const previewRemote = async (url: string): Promise<RemoteInstallSession> => {
+    if (!repo) throw new MobileGitError("仓库尚未连接", "INVALID_REPO");
+    if (!beginOperation()) throw new MobileGitError("另一个操作正在进行，请稍后再试", "UNKNOWN");
+    busyRef.current = "preview";
+    setBusy("preview");
+    try {
+      return await repo.previewRemoteSkills(url);
+    } catch (error) {
+      throw friendlyGitError(error);
+    } finally {
+      busyRef.current = null;
+      setBusy(null);
+      endOperation();
+    }
+  };
+
+  const cancelRemotePreview = async (tempDir: string) => {
+    if (!repo) return;
+    await repo.cancelRemotePreview(tempDir).catch(() => undefined);
+  };
+
+  const installRemote = async (
+    session: RemoteInstallSession,
+    items: RemoteSkillInstallItem[]
+  ): Promise<boolean> => {
+    if (!repo) return false;
+    return applyMutation(
+      () => repo.installRemoteSkills(session, items),
+      `已安装 ${items.length} 个 GitHub Skill`,
+      () => setRoute({ kind: "tab", tab: "skills" })
+    );
+  };
+
+  const checkUpdates = async () => {
+    if (!repo || !beginOperation()) return;
+    busyRef.current = "check-updates";
+    setBusy("check-updates");
+    setCheckingUpdates(true);
+    try {
+      const result = await repo.checkRemoteUpdates();
+      setSnapshot(result.snapshot);
+      showNotice(result.notice || "更新检查完成", result.pushed ? "success" : "warning");
     } catch (error) {
       showNotice(messageFor(error), "error");
     } finally {
+      setCheckingUpdates(false);
       busyRef.current = null;
       setBusy(null);
       endOperation();
@@ -476,6 +537,7 @@ export function MobileApp() {
             onBack={() => setRoute({ kind: "tab", tab: routeTab(route) })}
             onEdit={() => setSheet({ kind: "skill", skill: activeSkill })}
             onDelete={() => setSheet({ kind: "delete-skill", skill: activeSkill })}
+            onUpdate={() => setSheet({ kind: "update-skills", skillIds: [activeSkill.id] })}
             onTogglePreset={(presetId, included) => {
               void applyMutation(
                 () => repo.setPresetSkill(presetId, activeSkill.id, included),
@@ -518,6 +580,11 @@ export function MobileApp() {
             onQueryChange={setSkillQuery}
             onFilterChange={setSkillFilter}
             onCreate={() => setSheet({ kind: "skill", skill: null })}
+            onInstallRemote={() => setSheet({ kind: "remote-install" })}
+            onCheckUpdates={() => void checkUpdates()}
+            onUpdateAll={(skillIds) => setSheet({ kind: "update-skills", skillIds })}
+            checkingUpdates={checkingUpdates}
+            busy={Boolean(busy)}
             onOpenSkill={(skill) => {
               captureTabScroll();
               setRoute({ kind: "skill", id: skill.id, from: "skills" });
@@ -609,6 +676,15 @@ export function MobileApp() {
         onSave={savePreset}
         onClose={() => setSheet(null)}
       />
+      <RemoteInstaller
+        key={sheet?.kind === "remote-install" ? "remote-install" : "closed"}
+        open={sheet?.kind === "remote-install"}
+        busy={busy === "mutation"}
+        onPreview={previewRemote}
+        onInstall={installRemote}
+        onCancelPreview={cancelRemotePreview}
+        onClose={() => setSheet(null)}
+      />
       <MobileConfirmDialog
         open={sheet?.kind === "delete-skill"}
         title="删除 Skill？"
@@ -656,6 +732,23 @@ export function MobileApp() {
               setSheet(null);
               setRoute({ kind: "tab", tab: "presets" });
             }
+          );
+        }}
+      />
+      <MobileConfirmDialog
+        open={sheet?.kind === "update-skills"}
+        title={`更新 ${sheet?.kind === "update-skills" ? sheet.skillIds.length : 0} 个 Skill？`}
+        message="会用 GitHub 上游内容替换本地 Skill 文件，同时保留标签、Preset 归属和来源信息。失败的项目不会修改。"
+        confirmLabel="更新并同步"
+        busy={busy === "mutation"}
+        onClose={() => setSheet(null)}
+        onConfirm={() => {
+          if (!repo || sheet?.kind !== "update-skills") return;
+          const ids = sheet.skillIds;
+          void applyMutation(
+            () => repo.updateRemoteSkills(ids),
+            `已更新 ${ids.length} 个GitHub Skill`,
+            () => setSheet(null)
           );
         }}
       />

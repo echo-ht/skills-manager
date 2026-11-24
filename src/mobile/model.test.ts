@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   MobileGitError,
   friendlyGitError,
+  parseInstallSource,
   parseRemoteUrl,
   parseSkillMarkdown,
   renderSkillMarkdown,
@@ -19,6 +20,22 @@ describe("mobile repository model", () => {
   it("rejects non-GitHub or incomplete repository addresses", () => {
     expect(() => parseRemoteUrl("https://gitlab.com/echo/skills.git")).toThrow(MobileGitError);
     expect(() => parseRemoteUrl("skills-manager")).toThrow(MobileGitError);
+  });
+
+  it("parses a GitHub tree URL into branch and skill subdirectory", () => {
+    const source = parseInstallSource(
+      "git@github.com:someone/community-skills.git"
+    );
+    expect(source.remoteUrl).toBe("https://github.com/someone/community-skills.git");
+    expect(source.branch).toBe("");
+    expect(source.subpath).toBeNull();
+
+    const tree = parseInstallSource(
+      "https://github.com/someone/community-skills/tree/dev/skills/review"
+    );
+    expect(tree.branch).toBe("dev");
+    expect(tree.subpath).toBe("skills/review");
+    expect(tree.originalUrl).toContain("/tree/dev/");
   });
 
   it("round-trips the SKILL.md frontmatter without moving frontmatter into the body", () => {

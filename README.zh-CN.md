@@ -108,6 +108,8 @@ scoop install extras/skills-manager
 
 Android 版用于在手机上管理同一份 Git 技能仓库，不包含桌面端的 Agent 部署功能。应用会保留真实本地 Git 副本，Skill / Preset 的编辑会先形成 commit，再自动尝试 push；断网时改动仍保存在本地，可在恢复后重试。
 
+Skills 页可以直接从其他 GitHub 仓库预览并安装 Skill，保留原仓库、分支和子目录来源；之后可检查上游更新并一键更新全部或单个 Skill。
+
 Android APK 由 GitHub Actions 构建，无需在本地配置 Android SDK：
 
 1. 打开仓库的 **Actions → Build Android APK**。

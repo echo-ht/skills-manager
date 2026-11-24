@@ -9,6 +9,7 @@ import {
   formatJson,
   friendlyGitError,
   newId,
+  parseInstallSource,
   parseRemoteUrl,
   parseSkillMarkdown,
   renderSkillMarkdown,
@@ -20,14 +21,19 @@ import {
   type MobilePreset,
   type MobileSkill,
   type MutationResult,
+  type ParsedInstallSource,
   type PresetDraft,
   type PresetMembership,
   type PresetMembershipMetaFile,
   type PresetMetaFile,
+  type RemoteInstallSession,
+  type RemoteSkillInstallItem,
+  type RemoteSkillPreview,
   type RepoConnection,
   type RepoSnapshot,
   type SkillDraft,
   type SkillMetaFile,
+  type SkillUpdateStatus,
   type SyncPhase,
   type SyncSummary,
 } from "./model";
@@ -36,8 +42,18 @@ type LightningPromiseFs = InstanceType<typeof LightningFS>["promises"];
 
 const FS_NAME = "skills-manager-mobile";
 const REPO_ROOT = "/skills-manager";
+const CACHE_ROOT = "/skills-manager-cache";
+const REMOTE_PREVIEW_PREFIX = "remote-preview-";
 const APP_AUTHOR = { name: "Skills Manager Android", email: "android@skills-manager.local" };
 const META = ".skills-manager";
+
+interface StoredUpdateState {
+  status: SkillUpdateStatus;
+  lastCheckedAt: number | null;
+  error: string | null;
+  resolvedUrl: string | null;
+  revision: string | null;
+}
 
 const fs = new LightningFS(FS_NAME);
 const pfs: LightningPromiseFs = fs.promises;
@@ -150,6 +166,101 @@ async function walkFiles(root: string, maxDepth = 7): Promise<string[]> {
   }
   await visit(root, 0);
   return output;
+}
+
+async function hasSkillDocument(path: string): Promise<boolean> {
+  for (const name of ["SKILL.md", "skill.md"]) {
+    if (await exists(join(path, name))) return true;
+  }
+  return false;
+}
+
+async function findSkillDirectories(root: string): Promise<string[]> {
+  if (!(await exists(root))) return [];
+  if (await hasSkillDocument(root)) return [root];
+
+  const found: string[] = [];
+  async function visit(path: string, depth: number) {
+    if (depth > 8) return;
+    for (const entry of (await pfs.readdir(path)).sort()) {
+      if (
+        entry === ".git" ||
+        entry === META ||
+        entry === "node_modules" ||
+        entry === ".venv" ||
+        entry === "dist"
+      ) {
+        continue;
+      }
+      const child = join(path, entry);
+      if (!(await pfs.stat(child)).isDirectory()) continue;
+      if (await hasSkillDocument(child)) {
+        found.push(child);
+      } else {
+        await visit(child, depth + 1);
+      }
+    }
+  }
+  await visit(root, 0);
+  return found;
+}
+
+async function hashTree(root: string): Promise<string> {
+  const files = (await walkFiles(root)).sort();
+  const encoder = new TextEncoder();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (const file of files) {
+    const relative = file.slice(root.length).replace(/^\/+/, "");
+    const relativeBytes = encoder.encode(relative);
+    const content = await pfs.readFile(file);
+    const record = new Uint8Array(4 + relativeBytes.length + content.length);
+    new DataView(record.buffer).setUint32(0, relativeBytes.length, false);
+    record.set(relativeBytes, 4);
+    record.set(content, 4 + relativeBytes.length);
+    chunks.push(record);
+    total += record.length;
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+  const digest = await crypto.subtle.digest("SHA-256", merged);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function copyTree(source: string, destination: string): Promise<void> {
+  const stat = await pfs.stat(source);
+  if (!stat.isDirectory()) {
+    await mkdirp(dirname(destination));
+    await pfs.writeFile(destination, await pfs.readFile(source));
+    return;
+  }
+  await mkdirp(destination);
+  for (const entry of await pfs.readdir(source)) {
+    if (entry === ".git" || entry === META) continue;
+    await copyTree(join(source, entry), join(destination, entry));
+  }
+}
+
+async function cleanupRemotePreviews(): Promise<void> {
+  if (!(await exists(CACHE_ROOT))) return;
+  for (const entry of await pfs.readdir(CACHE_ROOT)) {
+    if (entry.startsWith(REMOTE_PREVIEW_PREFIX)) await removeTree(join(CACHE_ROOT, entry));
+  }
+}
+
+function safeRepoRelativePath(path: string): string {
+  const normalized = path.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  if (
+    !normalized ||
+    normalized.split("/").some((part) => part === "" || part === "." || part === "..")
+  ) {
+    throw new MobileGitError("上游 Skill 路径不安全", "INVALID_REPO");
+  }
+  return normalized;
 }
 
 async function readJsonDirectory<T>(path: string): Promise<T[]> {
@@ -293,6 +404,48 @@ export class AndroidGitRepository {
     this.dir = join(REPO_ROOT, this.repoKey);
   }
 
+  private updateStateKey(): string {
+    return `skills-manager.mobile.updates.${this.repoKey}`;
+  }
+
+  private loadUpdateStates(): Record<string, StoredUpdateState> {
+    try {
+      return JSON.parse(localStorage.getItem(this.updateStateKey()) || "{}") as Record<
+        string,
+        StoredUpdateState
+      >;
+    } catch {
+      return {};
+    }
+  }
+
+  private saveUpdateStates(states: Record<string, StoredUpdateState>): void {
+    localStorage.setItem(this.updateStateKey(), JSON.stringify(states));
+  }
+
+  private setUpdates(
+    updates: Array<{
+      id: string;
+      status: SkillUpdateStatus;
+      resolvedUrl?: string | null;
+      revision?: string | null;
+      error?: string | null;
+    }>
+  ): void {
+    const states = this.loadUpdateStates();
+    const checkedAt = Date.now();
+    for (const update of updates) {
+      states[update.id] = {
+        status: update.status,
+        lastCheckedAt: checkedAt,
+        error: update.error ?? null,
+        resolvedUrl: update.resolvedUrl ?? states[update.id]?.resolvedUrl ?? null,
+        revision: update.revision ?? states[update.id]?.revision ?? null,
+      };
+    }
+    this.saveUpdateStates(states);
+  }
+
   static async connect(
     remoteInput: string,
     token: string,
@@ -309,6 +462,7 @@ export class AndroidGitRepository {
     if (!token.trim()) throw new MobileGitError("请输入 GitHub Personal Access Token", "AUTH");
     const repo = new AndroidGitRepository(connection, token.trim());
     await mkdirp(REPO_ROOT);
+    await cleanupRemotePreviews();
 
     if (await exists(join(repo.dir, ".git"))) {
       onProgress?.("正在连接本地仓库…");
@@ -458,6 +612,7 @@ export class AndroidGitRepository {
   private async loadSkills(): Promise<MobileSkill[]> {
     const metaDir = join(this.dir, META, "skills");
     const memberships = await this.loadMemberships();
+    const updateStates = this.loadUpdateStates();
     const presetMap = new Map<string, string[]>();
     for (const membership of memberships) {
       const ids = presetMap.get(membership.skillId) ?? [];
@@ -482,6 +637,8 @@ export class AndroidGitRepository {
       const markdown = await readText(documentPath);
       const parsed = parseSkillMarkdown(markdown);
       const fallbackName = meta.path.split("/").filter(Boolean).pop() || meta.skill_id;
+      const sourceType = meta.source?.type || "local";
+      const persisted = updateStates[id];
       skills.push({
         id,
         name: parsed.name || fallbackName,
@@ -491,14 +648,19 @@ export class AndroidGitRepository {
         enabled: meta.enabled !== false,
         tags: sortTags(meta.tags ?? []),
         source: {
-          type: meta.source?.type || "local",
+          type: sourceType,
           ref: meta.source?.ref ?? null,
+          resolved: persisted?.resolvedUrl ?? meta.source?.ref ?? null,
           subpath: meta.source?.subpath ?? null,
           branch: meta.source?.branch ?? null,
+          revision: persisted?.revision ?? null,
         },
         content: parsed.body,
         frontmatter: parsed.frontmatter,
         presetIds: [...new Set(presetMap.get(id) ?? [])],
+        updateStatus: persisted?.status ?? (sourceType === "git" ? "unknown" : "local_only"),
+        lastCheckedAt: persisted?.lastCheckedAt ?? null,
+        lastCheckError: persisted?.error ?? null,
       });
     }
 
@@ -525,10 +687,20 @@ export class AndroidGitRepository {
         pathKey: skillPathKey(skillPath),
         enabled: true,
         tags: [],
-        source: { type: "local", ref: null, subpath: null, branch: null },
+        source: {
+          type: "local",
+          ref: null,
+          resolved: null,
+          subpath: null,
+          branch: null,
+          revision: null,
+        },
         content: parsed.body,
         frontmatter: parsed.frontmatter,
         presetIds: presetMap.get(id) ?? [],
+        updateStatus: "local_only",
+        lastCheckedAt: null,
+        lastCheckError: null,
       });
     }
     return skills.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
@@ -804,6 +976,365 @@ export class AndroidGitRepository {
     return this.pushLocalCommit();
   }
 
+  private async cloneUpstream(source: ParsedInstallSource): Promise<{
+    tempDir: string;
+    branch: string;
+    revision: string;
+  }> {
+    await mkdirp(CACHE_ROOT);
+    const tempDir = join(CACHE_ROOT, `${REMOTE_PREVIEW_PREFIX}${newId()}`);
+    try {
+      const info = await git.getRemoteInfo({
+        http: nativeGitHttp,
+        url: source.remoteUrl,
+        onAuth: () => this.auth(),
+      });
+      const branch = source.branch || info.HEAD?.replace("refs/heads/", "") || "main";
+      await git.clone({
+        fs,
+        http: nativeGitHttp,
+        dir: tempDir,
+        url: source.remoteUrl,
+        ref: branch,
+        singleBranch: true,
+        depth: 1,
+        onAuth: () => this.auth(),
+      });
+      const revision = await git.resolveRef({ fs, dir: tempDir, ref: "HEAD" });
+      return { tempDir, branch, revision };
+    } catch (error) {
+      await removeTree(tempDir).catch(() => undefined);
+      throw friendlyGitError(error);
+    }
+  }
+
+  async previewRemoteSkills(repoUrl: string): Promise<RemoteInstallSession> {
+    const source = parseInstallSource(repoUrl);
+    const cloned = await this.cloneUpstream(source);
+    try {
+      const scanRoot = source.subpath
+        ? join(cloned.tempDir, safeRepoRelativePath(source.subpath))
+        : cloned.tempDir;
+      if (!(await exists(scanRoot))) {
+        throw new MobileGitError(`仓库中不存在目录 ${source.subpath}`, "INVALID_REPO");
+      }
+      const dirs = await findSkillDirectories(scanRoot);
+      if (dirs.length === 0) {
+        throw new MobileGitError("这个仓库中没有找到含 SKILL.md 的 Skill", "INVALID_REPO");
+      }
+      const skills = await Promise.all(
+        dirs.map(async (dir) => {
+          const relPath =
+            dir === cloned.tempDir ? "." : dir.slice(cloned.tempDir.length).replace(/^\/+/, "");
+          const markdownPath = (await exists(join(dir, "SKILL.md")))
+            ? join(dir, "SKILL.md")
+            : join(dir, "skill.md");
+          const parsed = parseSkillMarkdown(await readText(markdownPath));
+          const fallback = relPath === "." ? source.repo : relPath.split("/").pop() || relPath;
+          return {
+            relPath,
+            name: parsed.name || fallback,
+            description: parsed.description,
+          } satisfies RemoteSkillPreview;
+        })
+      );
+      return {
+        originalUrl: source.originalUrl,
+        cloneUrl: source.remoteUrl,
+        owner: source.owner,
+        repo: source.repo,
+        branch: cloned.branch,
+        subpath: source.subpath,
+        revision: cloned.revision,
+        tempDir: cloned.tempDir,
+        skills: skills.sort((a, b) => a.name.localeCompare(b.name, "zh-CN")),
+      };
+    } catch (error) {
+      await removeTree(cloned.tempDir).catch(() => undefined);
+      throw friendlyGitError(error);
+    }
+  }
+
+  async cancelRemotePreview(tempDir: string): Promise<void> {
+    const expectedPrefix = `${CACHE_ROOT}/${REMOTE_PREVIEW_PREFIX}`;
+    if (!tempDir.startsWith(expectedPrefix) || tempDir.includes("..")) return;
+    await removeTree(tempDir);
+  }
+
+  async installRemoteSkills(
+    session: RemoteInstallSession,
+    items: RemoteSkillInstallItem[]
+  ): Promise<MutationResult> {
+    const expectedPrefix = `${CACHE_ROOT}/${REMOTE_PREVIEW_PREFIX}`;
+    if (!session.tempDir.startsWith(expectedPrefix) || session.tempDir.includes("..")) {
+      throw new MobileGitError("上游预览已失效，请重新预览", "INVALID_REPO");
+    }
+    try {
+      const installedIds: string[] = [];
+      const result = await this.mutate(async () => {
+        const currentSkills = await this.loadSkills();
+        const usedPaths = new Set(currentSkills.map((skill) => skill.pathKey));
+        const uniqueItems = [...new Map(items.map((item) => [item.relPath, item])).values()];
+        for (const item of uniqueItems) {
+          const remoteDir =
+            item.relPath === "."
+              ? session.tempDir
+              : join(session.tempDir, safeRepoRelativePath(item.relPath));
+          if (!(await hasSkillDocument(remoteDir))) continue;
+          const preview = session.skills.find((skill) => skill.relPath === item.relPath);
+          const preferredName = item.name.trim() || preview?.name || "skill";
+          const base = slugifySkillName(preferredName);
+          let destination = base;
+          let suffix = 2;
+          while (
+            usedPaths.has(skillPathKey(destination)) ||
+            (await exists(join(this.dir, destination)))
+          ) {
+            destination = `${base}-${suffix++}`;
+          }
+          usedPaths.add(skillPathKey(destination));
+          await copyTree(remoteDir, join(this.dir, destination));
+          const id = newId();
+          const meta: SkillMetaFile = {
+            schema_version: MOBILE_SCHEMA_VERSION,
+            skill_id: id,
+            path: destination,
+            path_key: skillPathKey(destination),
+            enabled: true,
+            tags: [],
+            source: {
+              type: "git",
+              ref: session.originalUrl,
+              subpath: item.relPath === "." ? null : item.relPath,
+              branch: session.branch,
+            },
+          };
+          await writeText(join(this.dir, META, "skills", `${id}.json`), formatJson(meta));
+          installedIds.push(id);
+        }
+        await writeText(join(this.dir, META, "schema.json"), formatJson({
+          schema_version: MOBILE_SCHEMA_VERSION,
+          app_min_version: "2.0.0",
+          created_by: "skills-manager",
+        }));
+        this.setUpdates(
+          installedIds.map((id) => ({
+            id,
+            status: "up_to_date",
+            resolvedUrl: session.cloneUrl,
+            revision: session.revision,
+          }))
+        );
+      }, `mobile: install ${items.length} upstream skill${items.length === 1 ? "" : "s"}`);
+      if (installedIds.length === 0) {
+        throw new MobileGitError("没有可安装的 Skill", "INVALID_REPO");
+      }
+      return result;
+    } finally {
+      await removeTree(session.tempDir).catch(() => undefined);
+    }
+  }
+
+  private async resolveRemoteSkillDir(tempDir: string, skill: MobileSkill): Promise<string> {
+    if (skill.source.subpath) {
+      const remoteDir = join(tempDir, safeRepoRelativePath(skill.source.subpath));
+      if (await hasSkillDocument(remoteDir)) return remoteDir;
+      throw new MobileGitError("上游已不存在这个 Skill 目录", "INVALID_REPO");
+    }
+    if (await hasSkillDocument(tempDir)) return tempDir;
+
+    const candidates = await findSkillDirectories(tempDir);
+    const matching: string[] = [];
+    for (const candidate of candidates) {
+      const documentPath = (await exists(join(candidate, "SKILL.md")))
+        ? join(candidate, "SKILL.md")
+        : join(candidate, "skill.md");
+      const parsed = parseSkillMarkdown(await readText(documentPath));
+      const basename = candidate.split("/").filter(Boolean).pop() || "";
+      if (parsed.name === skill.name || basename === skill.name) matching.push(candidate);
+    }
+    if (matching.length === 1) return matching[0];
+    if (candidates.length === 1) return candidates[0];
+    throw new MobileGitError("无法在上游仓库中唯一定位这个 Skill", "INVALID_REPO");
+  }
+
+  async checkRemoteUpdates(): Promise<MutationResult> {
+    const skills = (await this.loadSkills()).filter(
+      (skill) => skill.source.type === "git" && skill.source.ref
+    );
+    if (skills.length === 0) {
+      return {
+        snapshot: await this.snapshot(),
+        pushed: true,
+        notice: "当前没有可从 GitHub 检查更新的 Skill。",
+      };
+    }
+
+    const groups = new Map<string, { source: ParsedInstallSource; skills: MobileSkill[] }>();
+    const failures: string[] = [];
+    for (const skill of skills) {
+      try {
+        const source = parseInstallSource(skill.source.ref!);
+        source.branch = skill.source.branch || source.branch;
+        source.subpath = null;
+        const key = `${source.remoteUrl}|${source.branch}`;
+        const group = groups.get(key) ?? { source, skills: [] };
+        group.skills.push(skill);
+        groups.set(key, group);
+      } catch (error) {
+        const message = friendlyGitError(error).message;
+        this.setUpdates([{ id: skill.id, status: "error", error: message }]);
+        failures.push(`${skill.name}: ${message}`);
+      }
+    }
+
+    let updateCount = 0;
+    for (const group of groups.values()) {
+      let cloned: Awaited<ReturnType<typeof this.cloneUpstream>> | null = null;
+      try {
+        cloned = await this.cloneUpstream(group.source);
+        for (const skill of group.skills) {
+          try {
+            const localDir = join(this.dir, skill.path);
+            const remoteDir = await this.resolveRemoteSkillDir(cloned.tempDir, skill);
+            const [localHash, remoteHash] = await Promise.all([
+              hashTree(localDir),
+              hashTree(remoteDir),
+            ]);
+            const status: SkillUpdateStatus =
+              localHash === remoteHash ? "up_to_date" : "update_available";
+            if (status === "update_available") updateCount++;
+            this.setUpdates([
+              {
+                id: skill.id,
+                status,
+                resolvedUrl: group.source.remoteUrl,
+                revision: cloned.revision,
+              },
+            ]);
+          } catch (error) {
+            const message = friendlyGitError(error).message;
+            this.setUpdates([{ id: skill.id, status: "error", error: message }]);
+            failures.push(`${skill.name}: ${message}`);
+          }
+        }
+      } catch (error) {
+        const message = friendlyGitError(error).message;
+        this.setUpdates(
+          group.skills.map((skill) => ({
+            id: skill.id,
+            status: "error",
+            error: message,
+          }))
+        );
+        failures.push(...group.skills.map((skill) => `${skill.name}: ${message}`));
+      } finally {
+        if (cloned) await removeTree(cloned.tempDir).catch(() => undefined);
+      }
+    }
+
+    const notice =
+      failures.length > 0
+        ? `检查完成：${updateCount} 个可更新，${failures.length} 个检查失败。`
+        : updateCount > 0
+          ? `发现 ${updateCount} 个可更新的 Skill。`
+          : "所有 GitHub Skill 都是最新版本。";
+    return { snapshot: await this.snapshot(), pushed: failures.length === 0, notice };
+  }
+
+  async updateRemoteSkills(skillIds: string[]): Promise<MutationResult> {
+    const requested = new Set(skillIds);
+    const allSkills = await this.loadSkills();
+    const selected = allSkills.filter(
+      (skill) => requested.has(skill.id) && skill.source.type === "git" && skill.source.ref
+    );
+    if (selected.length === 0) {
+      return {
+        snapshot: await this.snapshot(),
+        pushed: true,
+        notice: "没有选择可更新的 GitHub Skill。",
+      };
+    }
+
+    const groups = new Map<string, { source: ParsedInstallSource; skills: MobileSkill[] }>();
+    for (const skill of selected) {
+      const source = parseInstallSource(skill.source.ref!);
+      source.branch = skill.source.branch || source.branch;
+      const key = `${source.remoteUrl}|${source.branch}`;
+      const group = groups.get(key) ?? { source, skills: [] };
+      group.skills.push(skill);
+      groups.set(key, group);
+    }
+
+    const failures: string[] = [];
+    let updatedCount = 0;
+    const result = await this.mutate(async () => {
+      for (const group of groups.values()) {
+        let cloned: Awaited<ReturnType<typeof this.cloneUpstream>> | null = null;
+        try {
+          cloned = await this.cloneUpstream(group.source);
+          for (const skill of group.skills) {
+            try {
+              const remoteDir = await this.resolveRemoteSkillDir(cloned.tempDir, skill);
+              const localDir = join(this.dir, skill.path);
+              await removeTree(localDir);
+              await copyTree(remoteDir, localDir);
+              await writeText(join(this.dir, META, "skills", `${skill.id}.json`), formatJson({
+                schema_version: MOBILE_SCHEMA_VERSION,
+                skill_id: skill.id,
+                path: skill.path,
+                path_key: skill.pathKey,
+                enabled: skill.enabled,
+                tags: skill.tags,
+                source: {
+                  type: "git",
+                  ref: skill.source.ref,
+                  subpath: skill.source.subpath,
+                  branch: group.source.branch,
+                },
+              } satisfies SkillMetaFile));
+              this.setUpdates([
+                {
+                  id: skill.id,
+                  status: "up_to_date",
+                  resolvedUrl: group.source.remoteUrl,
+                  revision: cloned.revision,
+                },
+              ]);
+              updatedCount++;
+            } catch (error) {
+              const message = friendlyGitError(error).message;
+              this.setUpdates([{ id: skill.id, status: "error", error: message }]);
+              failures.push(`${skill.name}: ${message}`);
+            }
+          }
+        } catch (error) {
+          const message = friendlyGitError(error).message;
+          this.setUpdates(
+            group.skills.map((skill) => ({
+              id: skill.id,
+              status: "error",
+              error: message,
+            }))
+          );
+          failures.push(...group.skills.map((skill) => `${skill.name}: ${message}`));
+        } finally {
+          if (cloned) await removeTree(cloned.tempDir).catch(() => undefined);
+        }
+      }
+    }, `mobile: update ${selected.length} upstream skill${selected.length === 1 ? "" : "s"}`);
+
+    return {
+      ...result,
+      notice:
+        failures.length > 0
+          ? [`已更新 ${updatedCount} 个 Skill，${failures.length} 个失败。`, result.notice]
+              .filter(Boolean)
+              .join(" ")
+          : result.notice,
+    };
+  }
+
   async saveSkill(draft: SkillDraft): Promise<MutationResult> {
     if (!draft.name.trim()) throw new MobileGitError("Skill 名称不能为空", "INVALID_REPO");
     return this.mutate(async () => {
@@ -838,6 +1369,14 @@ export class AndroidGitRepository {
         app_min_version: "2.0.0",
         created_by: "skills-manager",
       }));
+      const source = existing?.source ?? {
+        type: "local",
+        ref: null,
+        resolved: null,
+        subpath: null,
+        branch: null,
+        revision: null,
+      };
       const meta: SkillMetaFile = {
         schema_version: MOBILE_SCHEMA_VERSION,
         skill_id: id,
@@ -845,9 +1384,17 @@ export class AndroidGitRepository {
         path_key: skillPathKey(path),
         enabled: existing?.enabled ?? true,
         tags: sortTags(draft.tags),
-        source: existing?.source ?? { type: "local", ref: null, subpath: null, branch: null },
+        source: {
+          type: source.type,
+          ref: source.ref,
+          subpath: source.subpath,
+          branch: source.branch,
+        },
       };
       await writeText(join(this.dir, META, "skills", `${id}.json`), formatJson(meta));
+      if (source.type === "git") {
+        this.setUpdates([{ id, status: "unknown" }]);
+      }
     }, draft.id ? `mobile: update skill ${draft.name}` : `mobile: create skill ${draft.name}`);
   }
 
@@ -867,6 +1414,9 @@ export class AndroidGitRepository {
           surviving.filter((item) => item.scenarioId === presetId)
         );
       }
+      const updateStates = this.loadUpdateStates();
+      delete updateStates[skill.id];
+      this.saveUpdateStates(updateStates);
     }, `mobile: delete skill ${skillId}`);
   }
 

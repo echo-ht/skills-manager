@@ -7,9 +7,11 @@ The Android build is a Capacitor application that reuses the Skills Manager visu
 1. The user connects a GitHub repository with a personal access token.
 2. Isomorphic Git clones the repository into persistent app-local storage.
 3. Skills and presets are read from the working tree and `.skills-manager` metadata.
-4. Each UI mutation writes the complete set of affected files, stages them, and creates one commit.
-5. The app pushes that commit automatically. If push fails, the local commit remains and is shown as pending.
-6. On launch or refresh, the app fetches the upstream branch and fast-forwards only when that cannot overwrite local work.
+4. “Install from GitHub” clones another repository, previews every `SKILL.md`, copies selected skills, and records their original URL, branch, and subdirectory in desktop-compatible metadata.
+5. “Check updates” compares Git-sourced skill directories with their upstream repositories. Updating replaces only skill content while preserving tags and preset membership.
+6. Each UI mutation writes the complete set of affected files, stages them, and creates one commit.
+7. The app pushes that commit automatically. If push fails, the local commit remains and is shown as pending.
+8. On launch or refresh, the app fetches the upstream branch and fast-forwards only when that cannot overwrite local work.
 
 SSH remotes are accepted as input and normalized to HTTPS because the Android app authenticates with a GitHub token.
 

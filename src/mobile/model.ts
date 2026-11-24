@@ -5,9 +5,20 @@ export type SourceType = "git" | "local" | "import" | "skills.sh" | "url" | stri
 export interface SkillSource {
   type: SourceType;
   ref: string | null;
+  resolved: string | null;
   subpath: string | null;
   branch: string | null;
+  revision: string | null;
 }
+
+export type SkillUpdateStatus =
+  | "local_only"
+  | "unknown"
+  | "up_to_date"
+  | "update_available"
+  | "checking"
+  | "updating"
+  | "error";
 
 export interface MobileSkill {
   id: string;
@@ -21,6 +32,9 @@ export interface MobileSkill {
   content: string;
   frontmatter: string | null;
   presetIds: string[];
+  updateStatus: SkillUpdateStatus;
+  lastCheckedAt: number | null;
+  lastCheckError: string | null;
 }
 
 export interface MobilePreset {
@@ -91,6 +105,34 @@ export interface RepoConnection {
   branch: string;
 }
 
+export interface ParsedInstallSource extends RepoConnection {
+  originalUrl: string;
+  subpath: string | null;
+}
+
+export interface RemoteSkillPreview {
+  relPath: string;
+  name: string;
+  description: string | null;
+}
+
+export interface RemoteInstallSession {
+  originalUrl: string;
+  cloneUrl: string;
+  owner: string;
+  repo: string;
+  branch: string;
+  subpath: string | null;
+  revision: string;
+  tempDir: string;
+  skills: RemoteSkillPreview[];
+}
+
+export interface RemoteSkillInstallItem {
+  relPath: string;
+  name: string;
+}
+
 export interface MutationResult {
   snapshot: RepoSnapshot;
   pushed: boolean;
@@ -109,6 +151,14 @@ export interface MobileRepository {
   setPresetSkill(presetId: string, skillId: string, included: boolean): Promise<MutationResult>;
   reorderPreset(presetId: string, direction: -1 | 1): Promise<MutationResult>;
   reorderPresetSkill(presetId: string, skillId: string, direction: -1 | 1): Promise<MutationResult>;
+  previewRemoteSkills(repoUrl: string): Promise<RemoteInstallSession>;
+  cancelRemotePreview(tempDir: string): Promise<void>;
+  installRemoteSkills(
+    session: RemoteInstallSession,
+    items: RemoteSkillInstallItem[]
+  ): Promise<MutationResult>;
+  checkRemoteUpdates(): Promise<MutationResult>;
+  updateRemoteSkills(skillIds: string[]): Promise<MutationResult>;
 }
 
 export interface SkillMetaFile {
@@ -180,6 +230,41 @@ export function parseRemoteUrl(input: string): RepoConnection {
     repo: repo.replace(/\.git$/i, ""),
     branch,
     remoteUrl: `https://github.com/${owner}/${repo.replace(/\.git$/i, "")}.git`,
+  };
+}
+
+export function parseInstallSource(input: string): ParsedInstallSource {
+  const originalUrl = input.trim();
+  if (!originalUrl) throw new MobileGitError("请输入 GitHub 仓库或目录地址", "INVALID_REPO");
+
+  const treeUrl = originalUrl.match(
+    /^(?:https?:\/\/github\.com\/)?([^/]+)\/([^/]+?)(?:\.git)?\/tree\/([^/]+)(?:\/(.*))?$/i
+  );
+  const shorthandTree = originalUrl.match(
+    /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/tree\/([^/]+)(?:\/(.*))?$/
+  );
+  const parsedTree = treeUrl ?? shorthandTree;
+  if (parsedTree) {
+    const [, owner, repo, branch, subpath] = parsedTree;
+    if (!owner || !repo || !branch) {
+      throw new MobileGitError("GitHub 目录地址不完整", "INVALID_REPO");
+    }
+    return {
+      owner,
+      repo: repo.replace(/\.git$/i, ""),
+      branch: decodeURIComponent(branch),
+      subpath: subpath ? decodeURIComponent(subpath).replace(/\/+$/, "") : null,
+      remoteUrl: `https://github.com/${owner}/${repo.replace(/\.git$/i, "")}.git`,
+      originalUrl,
+    };
+  }
+
+  const base = parseRemoteUrl(originalUrl);
+  return {
+    ...base,
+    branch: "",
+    subpath: null,
+    originalUrl,
   };
 }
 

@@ -13,6 +13,7 @@ import {
   FileCode2,
   GitBranch,
   GitCommitHorizontal,
+  Github,
   Layers3,
   Loader2,
   Pencil,
@@ -348,6 +349,11 @@ interface SkillsScreenProps {
   onFilterChange: (filter: "all" | "untagged") => void;
   onOpenSkill: (skill: MobileSkill) => void;
   onCreate: () => void;
+  onInstallRemote: () => void;
+  onCheckUpdates: () => void;
+  onUpdateAll: (skillIds: string[]) => void;
+  checkingUpdates: boolean;
+  busy: boolean;
 }
 
 export function SkillsScreen({
@@ -358,6 +364,11 @@ export function SkillsScreen({
   onFilterChange,
   onOpenSkill,
   onCreate,
+  onInstallRemote,
+  onCheckUpdates,
+  onUpdateAll,
+  checkingUpdates,
+  busy,
 }: SkillsScreenProps) {
   const skills = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase("zh-CN");
@@ -369,6 +380,9 @@ export function SkillsScreen({
         .some((value) => String(value).toLocaleLowerCase("zh-CN").includes(normalized));
     });
   }, [filter, query, snapshot.skills]);
+  const updateIds = snapshot.skills
+    .filter((skill) => skill.updateStatus === "update_available")
+    .map((skill) => skill.id);
 
   return (
     <div className="mobile-screen mobile-library-screen">
@@ -399,6 +413,36 @@ export function SkillsScreen({
           未加标签
         </button>
       </div>
+      <div className="mobile-library-actions">
+        <button
+          className="mobile-button mobile-button-outlined"
+          type="button"
+          disabled={busy || checkingUpdates}
+          onClick={onInstallRemote}
+        >
+          <Github size={18} />
+          从 GitHub 安装
+        </button>
+        <button
+          className="mobile-button mobile-button-text"
+          type="button"
+          disabled={busy || checkingUpdates}
+          onClick={onCheckUpdates}
+        >
+          {checkingUpdates ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
+          {checkingUpdates ? "正在检查…" : "检查更新"}
+        </button>
+        {updateIds.length > 0 ? (
+          <button
+            className="mobile-button mobile-button-filled"
+            type="button"
+            disabled={busy || checkingUpdates}
+            onClick={() => onUpdateAll(updateIds)}
+          >
+            更新 {updateIds.length} 个
+          </button>
+        ) : null}
+      </div>
       <div className="mobile-list-region">
         {skills.length ? (
           <div className="mobile-skill-list">
@@ -414,6 +458,11 @@ export function SkillsScreen({
                 </span>
                 <span className="mobile-row-copy">
                   <span className="mobile-row-title">{skill.name}</span>
+                  {skill.updateStatus === "update_available" ? (
+                    <span className="mobile-update-badge">上游有更新</span>
+                  ) : skill.updateStatus === "error" ? (
+                    <span className="mobile-update-badge mobile-update-error">检查失败</span>
+                  ) : null}
                   <span className="mobile-row-description">
                     {skill.description || "暂无说明"}
                   </span>
@@ -451,7 +500,7 @@ export function SkillsScreen({
           />
         )}
       </div>
-      <button className="mobile-fab" type="button" onClick={onCreate}>
+      <button className="mobile-fab" type="button" disabled={busy} onClick={onCreate}>
         <Plus size={22} />
         新建
       </button>
@@ -466,6 +515,7 @@ interface SkillDetailProps {
   onBack: () => void;
   onEdit: () => void;
   onDelete: () => void;
+  onUpdate: () => void;
   onTogglePreset: (presetId: string, included: boolean) => void;
 }
 
@@ -476,6 +526,7 @@ export function SkillDetail({
   onBack,
   onEdit,
   onDelete,
+  onUpdate,
   onTogglePreset,
 }: SkillDetailProps) {
   return (
@@ -503,6 +554,17 @@ export function SkillDetail({
               {skill.source.type}
             </span>
             <span>{skill.content.split(/\s+/).length} 词</span>
+            {skill.source.type === "git" ? (
+              <span>
+                {skill.updateStatus === "update_available"
+                  ? "上游有更新"
+                  : skill.updateStatus === "error"
+                    ? "检查失败"
+                    : skill.updateStatus === "up_to_date"
+                      ? "已是最新"
+                      : "待检查"}
+              </span>
+            ) : null}
           </div>
           {skill.tags.length ? (
             <div className="mobile-tag-list">
@@ -510,6 +572,17 @@ export function SkillDetail({
                 <span key={tag}>{tag}</span>
               ))}
             </div>
+          ) : null}
+          {skill.updateStatus === "update_available" ? (
+            <button
+              className="mobile-button mobile-button-filled mobile-detail-update"
+              type="button"
+              disabled={busy}
+              onClick={onUpdate}
+            >
+              <RefreshCw size={18} />
+              用上游版本更新
+            </button>
           ) : null}
         </section>
 

@@ -112,6 +112,8 @@ Every installer ships the CLI inside the app — see [Where the binary lives](#w
 
 The Android app manages the same Git-backed skills repository from a phone. It intentionally omits desktop Agent deployment: it keeps a real local Git clone, turns Skill and Preset edits into commits, and pushes them automatically. A failed push leaves the commit safely on-device for retry.
 
+The Skills screen can preview and install skills from other GitHub repositories while preserving their source URL, branch, and subdirectory. Git-sourced skills can be checked for upstream updates and updated individually or in bulk.
+
 APKs are built by GitHub Actions, so no local Android SDK setup is required:
 
 1. Open **Actions → Build Android APK**.

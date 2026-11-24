@@ -365,6 +365,45 @@ body.mobile-body #root {
   background: var(--md-surface);
 }
 
+.mobile-remote-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mobile-remote-repo {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 13px 14px;
+  border-radius: 16px;
+  color: var(--md-primary);
+  background: var(--md-primary-soft);
+}
+
+.mobile-remote-repo > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mobile-remote-repo strong {
+  overflow: hidden;
+  color: var(--md-on-primary-soft);
+  font-size: 0.9375rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-remote-repo span {
+  overflow: hidden;
+  color: var(--md-on-primary-soft);
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .mobile-commit-row {
   display: flex;
   align-items: flex-start;
@@ -504,6 +543,19 @@ body.mobile-body #root {
   scrollbar-width: none;
 }
 
+.mobile-library-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 16px 12px;
+}
+
+.mobile-library-actions .mobile-button {
+  min-height: 48px;
+  padding-inline: 13px;
+  font-size: 0.8125rem;
+}
+
 .mobile-filter-row::-webkit-scrollbar {
   display: none;
 }
@@ -607,6 +659,21 @@ body.mobile-body #root {
   gap: 6px;
 }
 
+.mobile-update-badge {
+  align-self: flex-start;
+  padding: 2px 8px;
+  border-radius: 10px;
+  color: var(--md-warning-text);
+  background: var(--md-warning-soft);
+  font-size: 0.6875rem;
+  font-weight: 650;
+}
+
+.mobile-update-error {
+  color: var(--md-danger-text);
+  background: var(--md-danger-soft);
+}
+
 .mobile-row-tags span,
 .mobile-tag-list span,
 .mobile-meta-chips span {
@@ -650,6 +717,11 @@ body.mobile-body #root {
 
 .mobile-fab:active {
   background: var(--md-primary-strong);
+}
+
+.mobile-fab:disabled {
+  cursor: default;
+  opacity: 0.55;
 }
 
 .mobile-preset-region {
@@ -741,6 +813,11 @@ body.mobile-body #root {
 
 .mobile-tag-list {
   margin-top: 10px;
+}
+
+.mobile-detail-update {
+  width: 100%;
+  margin-top: 14px;
 }
 
 .mobile-choice-row {
