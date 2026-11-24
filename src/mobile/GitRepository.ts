@@ -79,12 +79,14 @@ interface NativeGitHttpPlugin {
     method?: string;
     headers?: Record<string, string>;
     data?: string;
+    timeoutMs?: number;
   }): Promise<{
     status: number;
     url: string;
     headers: Record<string, string>;
     data: string;
   }>;
+  cancel(): Promise<void>;
 }
 
 const NativeGitHttp = registerPlugin<NativeGitHttpPlugin>("GitHttp");
@@ -315,6 +317,7 @@ const nativeGitHttp: HttpClient = {
             "Accept-Encoding": "identity",
           },
           data: requestBody.length ? bytesToBase64(requestBody) : undefined,
+          timeoutMs: request.fetchOptions?.timeoutMs as number | undefined,
         });
         const bytes = response.data ? base64ToBytes(response.data) : new Uint8Array();
         request.onProgress?.({ phase: "Receiving", loaded: bytes.length, total: bytes.length });
@@ -400,11 +403,19 @@ export class AndroidGitRepository {
       >;
       for (const [id, state] of Object.entries(states)) {
         if (state.stateVersion === 2) continue;
+        const trustedRevision = state.status === "up_to_date" ? state.revision : null;
         states[id] = {
           ...state,
           // Before v2, update checks overwrote the installed revision with the
           // remote head, so a pending update could look "up to date" next time.
-          revision: state.status === "up_to_date" ? state.revision : null,
+          revision: trustedRevision,
+          status: trustedRevision
+            ? state.status
+            : state.status === "local_only" ||
+                state.status === "no_upstream" ||
+                state.status === "error"
+              ? state.status
+              : "unknown",
           remoteRevision: state.remoteRevision ?? state.revision ?? null,
           stateVersion: 2,
         };
@@ -871,16 +882,20 @@ export class AndroidGitRepository {
   }
 
   async checkpoint(message = "mobile: checkpoint local changes"): Promise<MutationResult> {
-    const changed = await this.stageAll();
-    if (changed > 0) {
-      await git.commit({
-        fs,
-        dir: this.dir,
-        message,
-        author: APP_AUTHOR,
-      });
-    }
+    await this.commitWorktree(message);
     return this.pushLocalCommit();
+  }
+
+  private async commitWorktree(message: string): Promise<boolean> {
+    const changed = await this.stageAll();
+    if (changed === 0) return false;
+    await git.commit({
+      fs,
+      dir: this.dir,
+      message,
+      author: APP_AUTHOR,
+    });
+    return true;
   }
 
   private async mergeRemoteSafely(): Promise<void> {
@@ -909,15 +924,17 @@ export class AndroidGitRepository {
     }
   }
 
-  private async pushLocalCommit(): Promise<MutationResult> {
+  private async pushLocalCommit(onProgress?: (message: string) => void): Promise<MutationResult> {
     let pushed = true;
     let notice: string | null = null;
     try {
+      onProgress?.("正在检查主仓库远端…");
       const remoteAfterFetch = await this.fetchRemote();
       const localHead = await this.localHead();
       if (remoteAfterFetch && localHead !== remoteAfterFetch) {
         await this.mergeRemoteSafely();
       }
+      onProgress?.("正在推送主仓库…");
       await git.push({
         fs,
         http: nativeGitHttp,
@@ -959,31 +976,17 @@ export class AndroidGitRepository {
     return { snapshot: await this.snapshot(), pushed: true, notice: null };
   }
 
-  async mutate(action: () => Promise<void>, message: string): Promise<MutationResult> {
-    let preflight: "up-to-date" | "updated" | "ahead" | "diverged" | "dirty" | "unreachable";
-    try {
-      preflight = await this.fastForwardIfPossible();
-    } catch (error) {
-      const friendly = friendlyGitError(error);
-      if (friendly.code === "CONFLICT") throw friendly;
-      preflight = "unreachable";
-    }
-    if (preflight === "dirty") {
-      await this.checkpoint("mobile: commit interrupted local changes");
-    }
-    if (preflight === "diverged") {
-      throw new MobileGitError("远端已有新提交，当前改动尚未开始。请先同步或处理分叉。", "CONFLICT");
-    }
+  async mutate(
+    action: () => Promise<void>,
+    message: string,
+    onProgress?: (message: string) => void
+  ): Promise<MutationResult> {
+    await this.commitWorktree("mobile: checkpoint interrupted local changes");
     await action();
-    const changed = await this.stageAll();
-    if (changed === 0) return { snapshot: await this.snapshot(), pushed: true, notice: null };
-    await git.commit({
-      fs,
-      dir: this.dir,
-      message,
-      author: APP_AUTHOR,
-    });
-    return this.pushLocalCommit();
+    onProgress?.("正在写入本地 Git…");
+    const changed = await this.commitWorktree(message);
+    if (!changed) return { snapshot: await this.snapshot(), pushed: true, notice: null };
+    return this.pushLocalCommit(onProgress);
   }
 
   private async cloneUpstream(source: ParsedInstallSource): Promise<{
@@ -1056,6 +1059,7 @@ export class AndroidGitRepository {
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": navigator.userAgent,
       },
+      fetchOptions: { timeoutMs: 30_000 },
     });
     const bytes = await collectBody(response.body);
     const text = new TextDecoder().decode(bytes);
@@ -1121,19 +1125,27 @@ export class AndroidGitRepository {
     }
     await removeTree(destination);
     await mkdirp(destination);
-    for (const entry of files) {
-      const relative = rootPath && entry.path.startsWith(`${rootPath}/`)
-        ? entry.path.slice(rootPath.length + 1)
-        : entry.path;
-      if (!relative) continue;
-      const blob = await this.githubApi<{ content: string; encoding: string }>(
-        `/repos/${encodeURIComponent(source.owner)}/${encodeURIComponent(source.repo)}/git/blobs/${entry.sha}`
+    for (let index = 0; index < files.length; index += 4) {
+      const batch = files.slice(index, index + 4);
+      const downloaded = await Promise.all(
+        batch.map(async (entry) => {
+          const blob = await this.githubApi<{ content: string; encoding: string }>(
+            `/repos/${encodeURIComponent(source.owner)}/${encodeURIComponent(source.repo)}/git/blobs/${entry.sha}`
+          );
+          if (blob.encoding !== "base64") {
+            throw new MobileGitError("GitHub 返回了不支持的二进制编码", "NETWORK");
+          }
+          return { entry, bytes: base64ToBytes(blob.content) };
+        })
       );
-      if (blob.encoding !== "base64") {
-        throw new MobileGitError("GitHub 返回了不支持的二进制编码", "NETWORK");
+      for (const { entry, bytes } of downloaded) {
+        const relative = rootPath && entry.path.startsWith(`${rootPath}/`)
+          ? entry.path.slice(rootPath.length + 1)
+          : entry.path;
+        if (!relative) continue;
+        await mkdirp(dirname(join(destination, relative)));
+        await pfs.writeFile(join(destination, relative), bytes);
       }
-      await mkdirp(dirname(join(destination, relative)));
-      await pfs.writeFile(join(destination, relative), base64ToBytes(blob.content));
     }
   }
 
@@ -1313,6 +1325,7 @@ export class AndroidGitRepository {
     }
 
     let updateCount = 0;
+    let unknownCount = 0;
     const storedUpdates = this.loadUpdateStates();
     for (const group of groups.values()) {
       try {
@@ -1321,11 +1334,12 @@ export class AndroidGitRepository {
           const installedRevision = storedUpdates[skill.id]?.revision ?? skill.source.revision;
           const status: SkillUpdateStatus =
             installedRevision === null || installedRevision === undefined
-              ? "update_available"
+              ? "unknown"
               : installedRevision === head.revision
                 ? "up_to_date"
                 : "update_available";
           if (status === "update_available") updateCount++;
+          else if (status === "unknown") unknownCount++;
           this.setUpdates([
             {
               id: skill.id,
@@ -1350,14 +1364,18 @@ export class AndroidGitRepository {
 
     const parts: string[] = [];
     if (updateCount > 0) parts.push(`发现 ${updateCount} 个可更新的 Skill`);
-    else parts.push("所有可检查的 GitHub Skill 都是最新版本");
+    else if (unknownCount === 0) parts.push("所有可检查的 GitHub Skill 都是最新版本");
     if (failures.length > 0) parts.push(`${failures.length} 个检查失败`);
+    if (unknownCount > 0) parts.push(`${unknownCount} 个缺少本地上游基线，无法比较`);
     if (skippedCount > 0) parts.push(`已跳过 ${skippedCount} 个无上游 Skill`);
     const notice = `${parts.join("，")}。`;
     return { snapshot: await this.snapshot(), pushed: failures.length === 0, notice };
   }
 
-  async updateRemoteSkills(skillIds: string[]): Promise<MutationResult> {
+  async updateRemoteSkills(
+    skillIds: string[],
+    onProgress?: (message: string) => void
+  ): Promise<MutationResult> {
     const requested = new Set(skillIds);
     const allSkills = await this.loadSkills();
     const selected = allSkills.filter(
@@ -1386,6 +1404,7 @@ export class AndroidGitRepository {
     const result = await this.mutate(async () => {
       for (const group of groups.values()) {
         try {
+          onProgress?.("正在检查上游提交…");
           const head = await this.remoteBranchHead(group.source);
           for (const skill of group.skills) {
             const installedRevision = this.loadUpdateStates()[skill.id]?.revision;
@@ -1403,12 +1422,14 @@ export class AndroidGitRepository {
             const stage = join(CACHE_ROOT, `stage-${newId()}`);
             try {
               const localDir = join(this.dir, skill.path);
+              onProgress?.(`正在下载 ${skill.name}…`);
               await this.downloadGithubSkill(
                 group.source,
                 head.revision,
                 skill.source.subpath,
                 stage
               );
+              onProgress?.(`正在写入 ${skill.name}…`);
               await removeTree(localDir);
               await pfs.rename(stage, localDir);
               await writeText(join(this.dir, META, "skills", `${skill.id}.json`), formatJson({
@@ -1453,7 +1474,7 @@ export class AndroidGitRepository {
           failures.push(...group.skills.map((skill) => `${skill.name}: ${message}`));
         }
       }
-    }, `mobile: update ${selected.length} upstream skill${selected.length === 1 ? "" : "s"}`);
+    }, `mobile: update ${selected.length} upstream skill${selected.length === 1 ? "" : "s"}`, onProgress);
 
     return {
       ...result,
@@ -1464,6 +1485,10 @@ export class AndroidGitRepository {
               .join(" ")
           : result.notice,
     };
+  }
+
+  async cancelNetworkOperations(): Promise<void> {
+    if (isNativeAndroid()) await NativeGitHttp.cancel();
   }
 
   async saveSkill(draft: SkillDraft): Promise<MutationResult> {

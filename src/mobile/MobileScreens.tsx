@@ -564,7 +564,9 @@ export function SkillDetail({
                       ? "检查失败"
                       : skill.updateStatus === "up_to_date"
                         ? "已是最新"
-                        : "待检查"}
+                        : skill.updateStatus === "unknown"
+                          ? "缺少上游基线"
+                          : "待检查"}
               </span>
             ) : null}
           </div>

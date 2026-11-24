@@ -164,7 +164,7 @@ describe("Android preview navigation", () => {
     expect(updateAll).toBeTruthy();
     await act(async () => updateAll.click());
     const confirm = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent?.includes("更新并同步")
+      (button) => button.textContent?.includes("开始更新")
     )!;
     await act(async () => {
       confirm.click();

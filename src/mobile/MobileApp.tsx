@@ -98,6 +98,7 @@ export function MobileApp() {
   const [bootError, setBootError] = useState<string | null>(null);
   const [initialRemote, setInitialRemote] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+  const [busyMessage, setBusyMessage] = useState("正在提交到本地 Git…");
   const [syncing, setSyncing] = useState(false);
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [route, setRoute] = useState<Route>({ kind: "tab", tab: "home" });
@@ -111,6 +112,7 @@ export function MobileApp() {
   const sheetRef = useRef(sheet);
   const busyRef = useRef(busy);
   const operationLockRef = useRef(false);
+  const cancelOperationRef = useRef<null | (() => Promise<void>)>(null);
   const tabScrollRef = useRef<Record<MainTab, number>>({
     home: 0,
     skills: 0,
@@ -262,7 +264,13 @@ export function MobileApp() {
     let disposed = false;
     let removeListener: (() => void) | undefined;
     CapacitorApp.addListener("backButton", () => {
-      if (busyRef.current) return;
+      if (busyRef.current) {
+        if (cancelOperationRef.current) {
+          setBusyMessage("正在取消更新…");
+          void cancelOperationRef.current();
+        }
+        return;
+      }
       if (sheetRef.current) {
         setSheet(null);
         return;
@@ -366,6 +374,7 @@ export function MobileApp() {
   ): Promise<boolean> => {
     if (!beginOperation()) return false;
     busyRef.current = "mutation";
+    setBusyMessage("正在准备提交…");
     setBusy("mutation");
     try {
       const result = await action();
@@ -378,6 +387,7 @@ export function MobileApp() {
       return false;
     } finally {
       busyRef.current = null;
+      setBusyMessage("正在提交到本地 Git…");
       setBusy(null);
       endOperation();
     }
@@ -646,7 +656,7 @@ export function MobileApp() {
       {busy === "mutation" ? (
         <div className="mobile-working" role="status" aria-live="polite">
           <Loader2 className="spin" size={17} />
-          正在提交到本地 Git…
+          {busyMessage}
         </div>
       ) : null}
 
@@ -739,17 +749,24 @@ export function MobileApp() {
         open={sheet?.kind === "update-skills"}
         title={`更新 ${sheet?.kind === "update-skills" ? sheet.skillIds.length : 0} 个 Skill？`}
         message="会用 GitHub 上游内容替换本地 Skill 文件，同时保留标签、Preset 归属和来源信息。失败的项目不会修改。"
-        confirmLabel="更新并同步"
+        confirmLabel="开始更新"
         busy={busy === "mutation"}
         onClose={() => setSheet(null)}
         onConfirm={() => {
           if (!repo || sheet?.kind !== "update-skills") return;
           const ids = sheet.skillIds;
+          cancelOperationRef.current = () => repo.cancelNetworkOperations();
           void applyMutation(
-            () => repo.updateRemoteSkills(ids),
-            `已更新 ${ids.length} 个GitHub Skill`,
+            () => repo.updateRemoteSkills(ids, setBusyMessage),
+            `已更新 ${ids.length} 个 GitHub Skill`,
             () => setSheet(null)
-          );
+          ).finally(() => {
+            cancelOperationRef.current = null;
+          });
+        }}
+        onCancelWhileBusy={() => {
+          setBusyMessage("正在取消更新…");
+          void cancelOperationRef.current?.();
         }}
       />
       <MobileConfirmDialog

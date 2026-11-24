@@ -7,8 +7,10 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import java.io.IOException;
+import java.util.Set;
 import java.util.Iterator;
 import java.util.Locale;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import okhttp3.Call;
 import okhttp3.Callback;
@@ -21,6 +23,8 @@ import okhttp3.Response;
 
 @CapacitorPlugin(name = "GitHttp")
 public class GitHttpPlugin extends Plugin {
+
+    private final Set<Call> activeCalls = ConcurrentHashMap.newKeySet();
 
     private final OkHttpClient client = new OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -69,14 +73,22 @@ public class GitHttpPlugin extends Plugin {
                 .method(method, requestBody)
                 .build();
 
-            client.newCall(request).enqueue(new Callback() {
+            Integer timeoutMs = call.getInt("timeoutMs");
+            OkHttpClient requestClient = timeoutMs == null
+                ? client
+                : client.newBuilder().callTimeout(timeoutMs, TimeUnit.MILLISECONDS).build();
+            Call requestCall = requestClient.newCall(request);
+            activeCalls.add(requestCall);
+            requestCall.enqueue(new Callback() {
                 @Override
                 public void onFailure(Call callHandle, IOException exception) {
+                    activeCalls.remove(callHandle);
                     call.reject("Git HTTP request failed: " + exception.getMessage(), "NETWORK", exception);
                 }
 
                 @Override
                 public void onResponse(Call callHandle, Response response) {
+                    activeCalls.remove(callHandle);
                     try (response) {
                         byte[] bytes = response.body() == null ? new byte[0] : response.body().bytes();
                         JSObject resultHeaders = new JSObject();
@@ -97,5 +109,12 @@ public class GitHttpPlugin extends Plugin {
         } catch (Exception exception) {
             call.reject("Could not create Git HTTP request: " + exception.getMessage(), "INVALID_REQUEST", exception);
         }
+    }
+
+    @PluginMethod
+    public void cancel(PluginCall call) {
+        for (Call activeCall : activeCalls) activeCall.cancel();
+        activeCalls.clear();
+        call.resolve();
     }
 }

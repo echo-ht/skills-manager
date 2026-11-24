@@ -360,7 +360,11 @@ export class DemoRepository implements MobileRepository {
     };
   }
 
-  async updateRemoteSkills(skillIds: string[]): Promise<MutationResult> {
+  async updateRemoteSkills(
+    skillIds: string[],
+    onProgress?: (message: string) => void
+  ): Promise<MutationResult> {
+    onProgress?.("正在更新 GitHub Skill…");
     const ids = new Set(skillIds);
     this.state.skills = this.state.skills.map((item) =>
       ids.has(item.id)
@@ -377,4 +381,6 @@ export class DemoRepository implements MobileRepository {
       notice: `已更新 ${ids.size} 个 GitHub Skill。`,
     };
   }
+
+  async cancelNetworkOperations(): Promise<void> {}
 }

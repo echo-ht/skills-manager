@@ -9,6 +9,7 @@ import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { HttpOptions, HttpResponse } from "@capacitor/core";
 import type { AndroidGitRepository } from "../src/mobile/GitRepository";
+import { repoStorageKey } from "../src/mobile/model";
 
 const httpRequest = vi.hoisted(() => vi.fn());
 vi.mock("@capacitor/core", async (importOriginal) => {
@@ -449,6 +450,17 @@ describe("Android Git repository integration", () => {
     expect(installedAlpha.source.ref).toBe("https://github.com/test/community.git");
     expect(installedAlpha.source.subpath).toBe("skills/remote-alpha");
     expect(installedAlpha.updateStatus).toBe("up_to_date");
+
+    const updateStateKey = `skills-manager.mobile.updates.${repoStorageKey(serverUrl)}`;
+    const savedUpdateStates = localStorage.getItem(updateStateKey);
+    expect(savedUpdateStates).not.toBeNull();
+    localStorage.removeItem(updateStateKey);
+    const withoutBaseline = await repository.checkRemoteUpdates();
+    expect(
+      withoutBaseline.snapshot.skills.find((skill) => skill.id === installedAlpha.id)
+        ?.updateStatus
+    ).toBe("unknown");
+    localStorage.setItem(updateStateKey, savedUpdateStates!);
 
     await repository.saveSkill({
       id: installedAlpha.id,

@@ -79,6 +79,7 @@ interface ConfirmDialogProps {
   confirmLabel?: string;
   destructive?: boolean;
   busy?: boolean;
+  onCancelWhileBusy?: () => void;
   onConfirm: () => void;
   onClose: () => void;
 }
@@ -90,6 +91,7 @@ export function MobileConfirmDialog({
   confirmLabel = "确认",
   destructive = false,
   busy = false,
+  onCancelWhileBusy,
   onConfirm,
   onClose,
 }: ConfirmDialogProps) {
@@ -114,14 +116,20 @@ export function MobileConfirmDialog({
       aria-labelledby={titleId}
       onCancel={(event) => {
         event.preventDefault();
-        if (!busy) onClose();
+        if (busy) onCancelWhileBusy?.();
+        else onClose();
       }}
     >
       <div className="mobile-confirm-surface">
         <h2 id={titleId}>{title}</h2>
         <p>{message}</p>
         <div className="mobile-confirm-actions">
-          <button className="mobile-button mobile-button-text" type="button" disabled={busy} onClick={onClose}>
+          <button
+            className="mobile-button mobile-button-text"
+            type="button"
+            disabled={busy && !onCancelWhileBusy}
+            onClick={() => (busy && onCancelWhileBusy ? onCancelWhileBusy() : onClose())}
+          >
             取消
           </button>
           <button

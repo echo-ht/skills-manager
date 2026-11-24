@@ -159,7 +159,11 @@ export interface MobileRepository {
     items: RemoteSkillInstallItem[]
   ): Promise<MutationResult>;
   checkRemoteUpdates(): Promise<MutationResult>;
-  updateRemoteSkills(skillIds: string[]): Promise<MutationResult>;
+  updateRemoteSkills(
+    skillIds: string[],
+    onProgress?: (message: string) => void
+  ): Promise<MutationResult>;
+  cancelNetworkOperations(): Promise<void>;
 }
 
 export interface SkillMetaFile {
@@ -195,7 +199,13 @@ export interface PresetMembershipMetaFile {
 }
 
 export class MobileGitError extends Error {
-  readonly code: "AUTH" | "NETWORK" | "CONFLICT" | "INVALID_REPO" | "UNKNOWN";
+  readonly code:
+    | "AUTH"
+    | "NETWORK"
+    | "CONFLICT"
+    | "INVALID_REPO"
+    | "CANCELLED"
+    | "UNKNOWN";
 
   constructor(message: string, code: MobileGitError["code"] = "UNKNOWN") {
     super(message);
@@ -435,6 +445,9 @@ export function formatRelativeTime(timestamp: number, now = Date.now()): string 
 export function friendlyGitError(error: unknown): MobileGitError {
   if (error instanceof MobileGitError) return error;
   const raw = error instanceof Error ? error.message : String(error);
+  if (/cancel|aborted/i.test(raw)) {
+    return new MobileGitError("操作已取消，本地数据没有被覆盖。", "CANCELLED");
+  }
   if (/401|403|auth|credential|password|token/i.test(raw)) {
     return new MobileGitError("GitHub 拒绝了凭据。请确认 PAT 未过期，且有该仓库的 Contents 读写权限。", "AUTH");
   }
