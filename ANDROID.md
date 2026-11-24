@@ -30,3 +30,5 @@ cd android
 The Capacitor 8 command line requires Node.js 22 or newer. The workflow uses Node.js 24 and Java 21.
 
 Use the **Build Android APK** workflow in GitHub Actions and download the `skills-manager-android-debug` artifact.
+
+Main-branch APKs use one persistent signing key stored only in GitHub Actions Secrets, and each build gets a higher `versionCode`. After the first transition from an older randomly-signed APK, uninstall once; later builds install over the existing app without clearing its data.

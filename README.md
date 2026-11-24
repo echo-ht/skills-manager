@@ -122,6 +122,8 @@ APKs are built by GitHub Actions, so no local Android SDK setup is required:
 
 Connecting requires a GitHub fine-grained PAT with repository Contents read/write access. SSH repository URLs are normalized to HTTPS, and the token is stored in Android secure storage. See [ANDROID.md](ANDROID.md).
 
+Main-branch builds use a persistent signing key stored in GitHub Actions Secrets and an increasing `versionCode`. Moving from an older randomly-signed APK requires one final uninstall; subsequent builds install over the app and keep its data.
+
 ## Quick Start
 
 1. Install skills from local folders, Git repositories, archives, or the marketplace.

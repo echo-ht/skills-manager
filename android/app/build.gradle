@@ -1,5 +1,16 @@
 apply plugin: 'com.android.application'
 
+def persistentDebugKeystore = System.getenv("ANDROID_KEYSTORE_PATH")
+def persistentDebugPassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+def persistentDebugAlias = System.getenv("ANDROID_KEY_ALIAS")
+def persistentDebugKeyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+def usePersistentDebugSigning = [
+    persistentDebugKeystore,
+    persistentDebugPassword,
+    persistentDebugAlias,
+    persistentDebugKeyPassword
+].every { it != null && !it.trim().isEmpty() } && file(persistentDebugKeystore).exists()
+
 android {
     namespace = "dev.skillsmanager.android"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -16,7 +27,23 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        if (usePersistentDebugSigning) {
+            persistentDebug {
+                storeFile file(persistentDebugKeystore)
+                storePassword persistentDebugPassword
+                keyAlias persistentDebugAlias
+                keyPassword persistentDebugKeyPassword
+                storeType "PKCS12"
+            }
+        }
+    }
     buildTypes {
+        debug {
+            if (usePersistentDebugSigning) {
+                signingConfig signingConfigs.persistentDebug
+            }
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'

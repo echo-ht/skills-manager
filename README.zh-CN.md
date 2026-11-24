@@ -118,6 +118,8 @@ Android APK 由 GitHub Actions 构建，无需在本地配置 Android SDK：
 
 首次连接需要仓库地址与具有 Contents 读写权限的 GitHub fine-grained PAT。`git@github.com:owner/repo.git` 会被规范化为 HTTPS，token 保存在 Android 安全存储中。详见 [ANDROID.md](ANDROID.md)。
 
+Main 分支构建使用保存在 GitHub Actions Secrets 中的固定签名密钥，并递增 `versionCode`。从早期随机签名版本的 APK 切换时需要卸载一次；之后的新构建可直接覆盖安装并保留 App 数据。
+
 ## 快速上手
 
 1. 从本地目录、Git 仓库、压缩包或市场安装 Skills。
