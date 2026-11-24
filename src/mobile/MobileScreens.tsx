@@ -587,6 +587,16 @@ export function SkillDetail({
               <RefreshCw size={18} />
               用上游版本更新
             </button>
+          ) : skill.updateStatus === "unknown" && skill.source.type === "git" && skill.source.ref ? (
+            <button
+              className="mobile-button mobile-button-outlined mobile-detail-update"
+              type="button"
+              disabled={busy}
+              onClick={onUpdate}
+            >
+              <RefreshCw size={18} />
+              获取上游版本并建立基线
+            </button>
           ) : null}
         </section>
 
