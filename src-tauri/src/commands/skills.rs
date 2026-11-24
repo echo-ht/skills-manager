@@ -3023,7 +3023,19 @@ pub fn check_skill_update_internal_with_remote(
 
     match skill.source_type.as_str() {
         "git" | "skillssh" => {
-            let git_source = git_source_from_skill(&skill)?;
+            let git_source = match git_source_from_skill(&skill) {
+                Ok(source) => source,
+                Err(_) => {
+                    // The row is marked as Git-backed, but it has no usable
+                    // upstream anymore (for example legacy or hand-edited
+                    // metadata). That is not a network failure and must not
+                    // make "check all" fail every other skill's result.
+                    store
+                        .update_skill_check_state(&skill.id, None, "unknown", None)
+                        .map_err(AppError::db)?;
+                    return managed_skill_by_id(store, skill_id);
+                }
+            };
             let metadata_updated = skill.source_ref_resolved.as_deref()
                 != Some(git_source.clone_url.as_str())
                 || skill.source_subpath.as_deref() != git_source.subpath.as_deref()
@@ -4382,6 +4394,34 @@ mod tests {
         assert_eq!(dto.update_status, "update_available");
         let stored = repo.store.get_skill_by_id("skill-1").unwrap().unwrap();
         assert_eq!(stored.remote_revision.as_deref(), Some("new-rev"));
+    }
+
+    #[test]
+    fn git_skill_without_upstream_is_skipped_instead_of_failing() {
+        let repo = test_repo();
+        let dir = write_skill_dir("skill-without-upstream");
+        let mut skill = sample_skill("skill-without-upstream", "skill-without-upstream", &dir);
+        skill.source_type = "git".to_string();
+        skill.source_ref = None;
+        skill.source_ref_resolved = None;
+        skill.update_status = "unknown".to_string();
+        repo.store.insert_skill(&skill).unwrap();
+
+        let dto = check_skill_update_internal_with_remote(
+            &repo.store,
+            "skill-without-upstream",
+            true,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(dto.update_status, "unknown");
+        let stored = repo
+            .store
+            .get_skill_by_id("skill-without-upstream")
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.last_check_error, None);
     }
 
     /// A reinstall between the off-lock resolve and this write keeps the skill's
