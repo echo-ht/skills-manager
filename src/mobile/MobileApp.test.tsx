@@ -179,6 +179,27 @@ describe("Android preview navigation", () => {
     ).toBe(false);
   });
 
+  it("establishes all missing upstream baselines from the skills toolbar", async () => {
+    await renderApp();
+    const skillsTab = [...container.querySelectorAll<HTMLButtonElement>("nav button")].find(
+      (button) => button.textContent?.includes("Skills")
+    )!;
+    await act(async () => skillsTab.click());
+    const establish = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent?.includes("建立 1 个基线")
+    )!;
+    expect(establish).toBeTruthy();
+    await act(async () => {
+      establish.click();
+      await Promise.resolve();
+    });
+    expect(
+      [...container.querySelectorAll<HTMLButtonElement>("button")].some((button) =>
+        button.textContent?.includes("建立 1 个基线")
+      )
+    ).toBe(false);
+  });
+
   it("creates a preset through the full-screen editor and reflects it immediately", async () => {
     await renderApp();
     const presetsTab = [...container.querySelectorAll<HTMLButtonElement>("nav button")].find(

@@ -1505,17 +1505,14 @@ export class AndroidGitRepository {
     };
   }
 
-  async establishRemoteBaseline(skillId: string): Promise<MutationResult> {
-    const skill = (await this.loadSkills()).find((candidate) => candidate.id === skillId);
-    if (!skill || skill.source.type !== "git" || !skill.source.ref) {
-      throw new MobileGitError("这个 Skill 没有可比较的 GitHub 上游", "INVALID_REPO");
-    }
-    const source = parseInstallSource(skill.source.ref);
-    source.branch = skill.source.branch || source.branch;
-    const head = await this.remoteBranchHead(source);
+  private async skillMatchesRemote(
+    skill: MobileSkill,
+    source: ParsedInstallSource,
+    revision: string
+  ): Promise<boolean> {
     const remoteFiles = await this.collectGithubFiles(
       source,
-      head.revision,
+      revision,
       skill.source.subpath
     );
     if (!remoteFiles.some((file) => /(?:^|\/)skill\.md$/i.test(file.path))) {
@@ -1541,9 +1538,21 @@ export class AndroidGitRepository {
       })
     );
     const localMap = new Map(localEntries);
-    const same =
+    return (
       localMap.size === remoteMap.size &&
-      [...localMap].every(([path, sha]) => remoteMap.get(path) === sha);
+      [...localMap].every(([path, sha]) => remoteMap.get(path) === sha)
+    );
+  }
+
+  async establishRemoteBaseline(skillId: string): Promise<MutationResult> {
+    const skill = (await this.loadSkills()).find((candidate) => candidate.id === skillId);
+    if (!skill || skill.source.type !== "git" || !skill.source.ref) {
+      throw new MobileGitError("这个 Skill 没有可比较的 GitHub 上游", "INVALID_REPO");
+    }
+    const source = parseInstallSource(skill.source.ref);
+    source.branch = skill.source.branch || source.branch;
+    const head = await this.remoteBranchHead(source);
+    const same = await this.skillMatchesRemote(skill, source, head.revision);
     this.setUpdates([
       same
         ? {
@@ -1565,6 +1574,101 @@ export class AndroidGitRepository {
       notice: same
         ? "本地内容与上游一致，已建立更新基线。"
         : "上游当前版本与本地内容不同，已标记为可更新。",
+    };
+  }
+
+  async establishAllRemoteBaselines(
+    onProgress?: (message: string) => void
+  ): Promise<MutationResult> {
+    const candidates = (await this.loadSkills()).filter(
+      (skill) =>
+        skill.updateStatus === "unknown" &&
+        skill.source.type === "git" &&
+        skill.source.ref
+    );
+    if (candidates.length === 0) {
+      return {
+        snapshot: await this.snapshot(),
+        pushed: true,
+        notice: "没有需要建立基线的 Skill。",
+      };
+    }
+
+    const groups = new Map<
+      string,
+      { source: ParsedInstallSource; skills: MobileSkill[] }
+    >();
+    let skipped = 0;
+    for (const skill of candidates) {
+      try {
+        const source = parseInstallSource(skill.source.ref!);
+        source.branch = skill.source.branch || source.branch;
+        source.subpath = null;
+        const key = `${source.remoteUrl}|${source.branch}`;
+        const group = groups.get(key) ?? { source, skills: [] };
+        group.skills.push(skill);
+        groups.set(key, group);
+      } catch {
+        skipped++;
+        this.setUpdates([{ id: skill.id, status: "no_upstream", error: null }]);
+      }
+    }
+
+    let matched = 0;
+    let available = 0;
+    const failures: string[] = [];
+    for (const group of groups.values()) {
+      try {
+        onProgress?.("正在读取上游提交…");
+        const head = await this.remoteBranchHead(group.source);
+        for (const skill of group.skills) {
+          try {
+            onProgress?.(`正在比较 ${skill.name}…`);
+            const same = await this.skillMatchesRemote(skill, group.source, head.revision);
+            if (same) matched++;
+            else available++;
+            this.setUpdates([
+              same
+                ? {
+                    id: skill.id,
+                    status: "up_to_date",
+                    resolvedUrl: group.source.remoteUrl,
+                    revision: head.revision,
+                  }
+                : {
+                    id: skill.id,
+                    status: "update_available",
+                    resolvedUrl: group.source.remoteUrl,
+                    remoteRevision: head.revision,
+                  },
+            ]);
+          } catch (error) {
+            const message = friendlyGitError(error).message;
+            this.setUpdates([{ id: skill.id, status: "error", error: message }]);
+            failures.push(`${skill.name}: ${message}`);
+          }
+        }
+      } catch (error) {
+        const message = friendlyGitError(error).message;
+        this.setUpdates(
+          group.skills.map((skill) => ({
+            id: skill.id,
+            status: "error",
+            error: message,
+          }))
+        );
+        failures.push(...group.skills.map((skill) => `${skill.name}: ${message}`));
+      }
+    }
+
+    const parts = [`${matched} 个已建立基线`];
+    if (available > 0) parts.push(`${available} 个与上游不同，已标记可更新`);
+    if (failures.length > 0) parts.push(`${failures.length} 个检查失败`);
+    if (skipped > 0) parts.push(`${skipped} 个无可用上游`);
+    return {
+      snapshot: await this.snapshot(),
+      pushed: failures.length === 0,
+      notice: `${parts.join("，")}。`,
     };
   }
 

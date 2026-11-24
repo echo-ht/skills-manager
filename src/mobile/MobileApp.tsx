@@ -466,6 +466,27 @@ export function MobileApp() {
     }
   };
 
+  const establishAllBaselines = async () => {
+    if (!repo || !beginOperation()) return;
+    busyRef.current = "baseline";
+    setBusy("baseline");
+    setBusyMessage("正在准备建立更新基线…");
+    cancelOperationRef.current = () => repo.cancelNetworkOperations();
+    try {
+      const result = await repo.establishAllRemoteBaselines(setBusyMessage);
+      setSnapshot(result.snapshot);
+      showNotice(result.notice || "基线检查完成", result.pushed ? "success" : "warning");
+    } catch (error) {
+      showNotice(messageFor(error), "error");
+    } finally {
+      cancelOperationRef.current = null;
+      busyRef.current = null;
+      setBusyMessage("正在提交到本地 Git…");
+      setBusy(null);
+      endOperation();
+    }
+  };
+
   const syncNow = async () => {
     if (!repo || !beginOperation()) return;
     busyRef.current = "sync";
@@ -625,6 +646,7 @@ export function MobileApp() {
             onInstallRemote={() => setSheet({ kind: "remote-install" })}
             onCheckUpdates={() => void checkUpdates()}
             onUpdateAll={(skillIds) => setSheet({ kind: "update-skills", skillIds })}
+            onEstablishAllBaselines={() => void establishAllBaselines()}
             checkingUpdates={checkingUpdates}
             busy={Boolean(busy)}
             onOpenSkill={(skill) => {

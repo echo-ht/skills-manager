@@ -375,6 +375,7 @@ interface SkillsScreenProps {
   onInstallRemote: () => void;
   onCheckUpdates: () => void;
   onUpdateAll: (skillIds: string[]) => void;
+  onEstablishAllBaselines: () => void;
   checkingUpdates: boolean;
   busy: boolean;
 }
@@ -390,6 +391,7 @@ export function SkillsScreen({
   onInstallRemote,
   onCheckUpdates,
   onUpdateAll,
+  onEstablishAllBaselines,
   checkingUpdates,
   busy,
 }: SkillsScreenProps) {
@@ -406,6 +408,12 @@ export function SkillsScreen({
   const updateIds = snapshot.skills
     .filter((skill) => skill.updateStatus === "update_available")
     .map((skill) => skill.id);
+  const baselineCount = snapshot.skills.filter(
+    (skill) =>
+      skill.updateStatus === "unknown" &&
+      skill.source.type === "git" &&
+      Boolean(skill.source.ref)
+  ).length;
 
   return (
     <div className="mobile-screen mobile-library-screen">
@@ -463,6 +471,16 @@ export function SkillsScreen({
             onClick={() => onUpdateAll(updateIds)}
           >
             更新 {updateIds.length} 个
+          </button>
+        ) : null}
+        {baselineCount > 0 ? (
+          <button
+            className="mobile-button mobile-button-outlined"
+            type="button"
+            disabled={busy || checkingUpdates}
+            onClick={onEstablishAllBaselines}
+          >
+            建立 {baselineCount} 个基线
           </button>
         ) : null}
       </div>

@@ -87,6 +87,7 @@ function initialSnapshot(): RepoSnapshot {
     skill("skill-release", "release-check", "核对版本、变更记录与发布产物", ["release", "qa"], ["preset-release"]),
     skill("skill-git", "git-recovery", "诊断未提交改动、分叉与意外 reset", ["git", "recovery"], []),
   ];
+  skills[skills.length - 1].updateStatus = "unknown";
   return {
     ...demoConnection,
     skills,
@@ -398,6 +399,22 @@ export class DemoRepository implements MobileRepository {
       snapshot: this.state,
       pushed: true,
       notice: "本地内容与上游一致，已建立更新基线。",
+    };
+  }
+
+  async establishAllRemoteBaselines(
+    onProgress?: (message: string) => void
+  ): Promise<MutationResult> {
+    onProgress?.("正在批量建立上游基线…");
+    this.state.skills = this.state.skills.map((item) =>
+      item.updateStatus === "unknown"
+        ? { ...item, updateStatus: "up_to_date", lastCheckedAt: Date.now() }
+        : item
+    );
+    return {
+      snapshot: this.state,
+      pushed: true,
+      notice: "已建立全部可比较的更新基线。",
     };
   }
 }
