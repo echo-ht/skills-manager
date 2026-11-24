@@ -7,6 +7,7 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import java.io.IOException;
+import java.util.Iterator;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import okhttp3.Call;
@@ -44,7 +45,9 @@ public class GitHttpPlugin extends Plugin {
             JSObject inputHeaders = call.getObject("headers", new JSObject());
             Headers.Builder headers = new Headers.Builder();
             String contentType = "application/octet-stream";
-            for (String name : inputHeaders.keys()) {
+            Iterator<String> headerNames = inputHeaders.keys();
+            while (headerNames.hasNext()) {
+                String name = headerNames.next();
                 String value = inputHeaders.getString(name);
                 if (value == null || "content-length".equalsIgnoreCase(name)) continue;
                 if ("content-type".equalsIgnoreCase(name)) contentType = value;
