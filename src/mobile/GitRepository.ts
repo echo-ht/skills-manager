@@ -48,11 +48,21 @@ const APP_AUTHOR = { name: "Skills Manager Android", email: "android@skills-mana
 const META = ".skills-manager";
 
 interface StoredUpdateState {
+  stateVersion: number;
   status: SkillUpdateStatus;
   lastCheckedAt: number | null;
   error: string | null;
   resolvedUrl: string | null;
   revision: string | null;
+  remoteRevision: string | null;
+}
+
+interface GithubContentEntry {
+  name: string;
+  path: string;
+  type: "file" | "dir" | "symlink" | "submodule";
+  sha: string;
+  size?: number;
 }
 
 const fs = new LightningFS(FS_NAME);
@@ -203,32 +213,6 @@ async function findSkillDirectories(root: string): Promise<string[]> {
   }
   await visit(root, 0);
   return found;
-}
-
-async function hashTree(root: string): Promise<string> {
-  const files = (await walkFiles(root)).sort();
-  const encoder = new TextEncoder();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (const file of files) {
-    const relative = file.slice(root.length).replace(/^\/+/, "");
-    const relativeBytes = encoder.encode(relative);
-    const content = await pfs.readFile(file);
-    const record = new Uint8Array(4 + relativeBytes.length + content.length);
-    new DataView(record.buffer).setUint32(0, relativeBytes.length, false);
-    record.set(relativeBytes, 4);
-    record.set(content, 4 + relativeBytes.length);
-    chunks.push(record);
-    total += record.length;
-  }
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.length;
-  }
-  const digest = await crypto.subtle.digest("SHA-256", merged);
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 async function copyTree(source: string, destination: string): Promise<void> {
@@ -410,10 +394,22 @@ export class AndroidGitRepository {
 
   private loadUpdateStates(): Record<string, StoredUpdateState> {
     try {
-      return JSON.parse(localStorage.getItem(this.updateStateKey()) || "{}") as Record<
+      const states = JSON.parse(localStorage.getItem(this.updateStateKey()) || "{}") as Record<
         string,
         StoredUpdateState
       >;
+      for (const [id, state] of Object.entries(states)) {
+        if (state.stateVersion === 2) continue;
+        states[id] = {
+          ...state,
+          // Before v2, update checks overwrote the installed revision with the
+          // remote head, so a pending update could look "up to date" next time.
+          revision: state.status === "up_to_date" ? state.revision : null,
+          remoteRevision: state.remoteRevision ?? state.revision ?? null,
+          stateVersion: 2,
+        };
+      }
+      return states;
     } catch {
       return {};
     }
@@ -429,6 +425,7 @@ export class AndroidGitRepository {
       status: SkillUpdateStatus;
       resolvedUrl?: string | null;
       revision?: string | null;
+      remoteRevision?: string | null;
       error?: string | null;
     }>
   ): void {
@@ -436,11 +433,17 @@ export class AndroidGitRepository {
     const checkedAt = Date.now();
     for (const update of updates) {
       states[update.id] = {
+        stateVersion: 2,
         status: update.status,
         lastCheckedAt: checkedAt,
         error: update.error ?? null,
         resolvedUrl: update.resolvedUrl ?? states[update.id]?.resolvedUrl ?? null,
         revision: update.revision ?? states[update.id]?.revision ?? null,
+        remoteRevision:
+          update.remoteRevision ??
+          update.revision ??
+          states[update.id]?.remoteRevision ??
+          null,
       };
     }
     this.saveUpdateStates(states);
@@ -1015,6 +1018,125 @@ export class AndroidGitRepository {
     }
   }
 
+  private async remoteBranchHead(source: ParsedInstallSource): Promise<{
+    branch: string;
+    revision: string;
+  }> {
+    try {
+      const refs = await git.listServerRefs({
+        http: nativeGitHttp,
+        url: source.remoteUrl,
+        protocolVersion: 2,
+        symrefs: true,
+        onAuth: () => this.auth(),
+      });
+      const headRef = refs.find((ref) => ref.ref === "HEAD");
+      const branch =
+        source.branch ||
+        headRef?.target?.replace("refs/heads/", "") ||
+        "main";
+      const fullRef = `refs/heads/${branch}`;
+      const revision = refs.find((ref) => ref.ref === fullRef)?.oid;
+      if (!revision) {
+        throw new MobileGitError(`上游分支 ${branch} 不存在`, "INVALID_REPO");
+      }
+      return { branch, revision };
+    } catch (error) {
+      throw friendlyGitError(error);
+    }
+  }
+
+  private async githubApi<T>(path: string): Promise<T> {
+    const response = await nativeGitHttp.request({
+      url: `https://api.github.com${path}`,
+      method: "GET",
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${this.token}`,
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": navigator.userAgent,
+      },
+    });
+    const bytes = await collectBody(response.body);
+    const text = new TextDecoder().decode(bytes);
+    if (response.statusCode >= 400) {
+      let message = `GitHub API ${response.statusCode}`;
+      try {
+        const error = JSON.parse(text) as { message?: string };
+        if (error.message) message = error.message;
+      } catch {
+        // Keep the HTTP status when GitHub did not return JSON.
+      }
+      const code =
+        response.statusCode === 401 || response.statusCode === 403
+          ? "AUTH"
+          : response.statusCode === 404
+            ? "INVALID_REPO"
+            : "NETWORK";
+      throw new MobileGitError(message, code);
+    }
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      throw new MobileGitError("GitHub 返回了无法解析的数据", "NETWORK");
+    }
+  }
+
+  private async githubContents(
+    source: ParsedInstallSource,
+    revision: string,
+    repositoryPath: string | null
+  ): Promise<GithubContentEntry[]> {
+    const path = repositoryPath
+      ? repositoryPath.split("/").map(encodeURIComponent).join("/")
+      : "";
+    const response = await this.githubApi<GithubContentEntry | GithubContentEntry[]>(
+      `/repos/${encodeURIComponent(source.owner)}/${encodeURIComponent(source.repo)}/contents/${path}?ref=${encodeURIComponent(revision)}`
+    );
+    return Array.isArray(response) ? response : [response];
+  }
+
+  private async downloadGithubSkill(
+    source: ParsedInstallSource,
+    revision: string,
+    repositoryPath: string | null,
+    destination: string
+  ): Promise<void> {
+    const rootPath = repositoryPath ? safeRepoRelativePath(repositoryPath) : "";
+    const files: Array<{ path: string; sha: string }> = [];
+
+    const collect = async (remotePath: string | null) => {
+      const entries = await this.githubContents(source, revision, remotePath);
+      for (const entry of entries) {
+        if (entry.type === "dir") await collect(entry.path);
+        else if (entry.type === "file" || entry.type === "symlink") {
+          files.push({ path: entry.path, sha: entry.sha });
+        }
+      }
+    };
+    await collect(rootPath || null);
+
+    if (!files.some((entry) => /(?:^|\/)skill\.md$/i.test(entry.path))) {
+      throw new MobileGitError("上游已不存在这个 Skill 目录", "INVALID_REPO");
+    }
+    await removeTree(destination);
+    await mkdirp(destination);
+    for (const entry of files) {
+      const relative = rootPath && entry.path.startsWith(`${rootPath}/`)
+        ? entry.path.slice(rootPath.length + 1)
+        : entry.path;
+      if (!relative) continue;
+      const blob = await this.githubApi<{ content: string; encoding: string }>(
+        `/repos/${encodeURIComponent(source.owner)}/${encodeURIComponent(source.repo)}/git/blobs/${entry.sha}`
+      );
+      if (blob.encoding !== "base64") {
+        throw new MobileGitError("GitHub 返回了不支持的二进制编码", "NETWORK");
+      }
+      await mkdirp(dirname(join(destination, relative)));
+      await pfs.writeFile(join(destination, relative), base64ToBytes(blob.content));
+    }
+  }
+
   async previewRemoteSkills(repoUrl: string): Promise<RemoteInstallSession> {
     const source = parseInstallSource(repoUrl);
     const cloned = await this.cloneUpstream(source);
@@ -1142,29 +1264,6 @@ export class AndroidGitRepository {
     }
   }
 
-  private async resolveRemoteSkillDir(tempDir: string, skill: MobileSkill): Promise<string> {
-    if (skill.source.subpath) {
-      const remoteDir = join(tempDir, safeRepoRelativePath(skill.source.subpath));
-      if (await hasSkillDocument(remoteDir)) return remoteDir;
-      throw new MobileGitError("上游已不存在这个 Skill 目录", "INVALID_REPO");
-    }
-    if (await hasSkillDocument(tempDir)) return tempDir;
-
-    const candidates = await findSkillDirectories(tempDir);
-    const matching: string[] = [];
-    for (const candidate of candidates) {
-      const documentPath = (await exists(join(candidate, "SKILL.md")))
-        ? join(candidate, "SKILL.md")
-        : join(candidate, "skill.md");
-      const parsed = parseSkillMarkdown(await readText(documentPath));
-      const basename = candidate.split("/").filter(Boolean).pop() || "";
-      if (parsed.name === skill.name || basename === skill.name) matching.push(candidate);
-    }
-    if (matching.length === 1) return matching[0];
-    if (candidates.length === 1) return candidates[0];
-    throw new MobileGitError("无法在上游仓库中唯一定位这个 Skill", "INVALID_REPO");
-  }
-
   async checkRemoteUpdates(): Promise<MutationResult> {
     const allSkills = await this.loadSkills();
     const skipped = allSkills.filter(
@@ -1214,34 +1313,27 @@ export class AndroidGitRepository {
     }
 
     let updateCount = 0;
+    const storedUpdates = this.loadUpdateStates();
     for (const group of groups.values()) {
-      let cloned: Awaited<ReturnType<typeof this.cloneUpstream>> | null = null;
       try {
-        cloned = await this.cloneUpstream(group.source);
+        const head = await this.remoteBranchHead(group.source);
         for (const skill of group.skills) {
-          try {
-            const localDir = join(this.dir, skill.path);
-            const remoteDir = await this.resolveRemoteSkillDir(cloned.tempDir, skill);
-            const [localHash, remoteHash] = await Promise.all([
-              hashTree(localDir),
-              hashTree(remoteDir),
-            ]);
-            const status: SkillUpdateStatus =
-              localHash === remoteHash ? "up_to_date" : "update_available";
-            if (status === "update_available") updateCount++;
-            this.setUpdates([
-              {
-                id: skill.id,
-                status,
-                resolvedUrl: group.source.remoteUrl,
-                revision: cloned.revision,
-              },
-            ]);
-          } catch (error) {
-            const message = friendlyGitError(error).message;
-            this.setUpdates([{ id: skill.id, status: "error", error: message }]);
-            failures.push(`${skill.name}: ${message}`);
-          }
+          const installedRevision = storedUpdates[skill.id]?.revision ?? skill.source.revision;
+          const status: SkillUpdateStatus =
+            installedRevision === null || installedRevision === undefined
+              ? "update_available"
+              : installedRevision === head.revision
+                ? "up_to_date"
+                : "update_available";
+          if (status === "update_available") updateCount++;
+          this.setUpdates([
+            {
+              id: skill.id,
+              status,
+              resolvedUrl: group.source.remoteUrl,
+              remoteRevision: head.revision,
+            },
+          ]);
         }
       } catch (error) {
         const message = friendlyGitError(error).message;
@@ -1253,8 +1345,6 @@ export class AndroidGitRepository {
           }))
         );
         failures.push(...group.skills.map((skill) => `${skill.name}: ${message}`));
-      } finally {
-        if (cloned) await removeTree(cloned.tempDir).catch(() => undefined);
       }
     }
 
@@ -1295,15 +1385,32 @@ export class AndroidGitRepository {
     let updatedCount = 0;
     const result = await this.mutate(async () => {
       for (const group of groups.values()) {
-        let cloned: Awaited<ReturnType<typeof this.cloneUpstream>> | null = null;
         try {
-          cloned = await this.cloneUpstream(group.source);
+          const head = await this.remoteBranchHead(group.source);
           for (const skill of group.skills) {
+            const installedRevision = this.loadUpdateStates()[skill.id]?.revision;
+            if (installedRevision === head.revision) {
+              this.setUpdates([
+                {
+                  id: skill.id,
+                  status: "up_to_date",
+                  resolvedUrl: group.source.remoteUrl,
+                  revision: head.revision,
+                },
+              ]);
+              continue;
+            }
+            const stage = join(CACHE_ROOT, `stage-${newId()}`);
             try {
-              const remoteDir = await this.resolveRemoteSkillDir(cloned.tempDir, skill);
               const localDir = join(this.dir, skill.path);
+              await this.downloadGithubSkill(
+                group.source,
+                head.revision,
+                skill.source.subpath,
+                stage
+              );
               await removeTree(localDir);
-              await copyTree(remoteDir, localDir);
+              await pfs.rename(stage, localDir);
               await writeText(join(this.dir, META, "skills", `${skill.id}.json`), formatJson({
                 schema_version: MOBILE_SCHEMA_VERSION,
                 skill_id: skill.id,
@@ -1315,7 +1422,7 @@ export class AndroidGitRepository {
                   type: "git",
                   ref: skill.source.ref,
                   subpath: skill.source.subpath,
-                  branch: group.source.branch,
+                  branch: head.branch,
                 },
               } satisfies SkillMetaFile));
               this.setUpdates([
@@ -1323,11 +1430,12 @@ export class AndroidGitRepository {
                   id: skill.id,
                   status: "up_to_date",
                   resolvedUrl: group.source.remoteUrl,
-                  revision: cloned.revision,
+                  revision: head.revision,
                 },
               ]);
               updatedCount++;
             } catch (error) {
+              await removeTree(stage).catch(() => undefined);
               const message = friendlyGitError(error).message;
               this.setUpdates([{ id: skill.id, status: "error", error: message }]);
               failures.push(`${skill.name}: ${message}`);
@@ -1343,8 +1451,6 @@ export class AndroidGitRepository {
             }))
           );
           failures.push(...group.skills.map((skill) => `${skill.name}: ${message}`));
-        } finally {
-          if (cloned) await removeTree(cloned.tempDir).catch(() => undefined);
         }
       }
     }, `mobile: update ${selected.length} upstream skill${selected.length === 1 ? "" : "s"}`);

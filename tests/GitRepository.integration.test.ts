@@ -64,6 +64,18 @@ function runGit(args: string[], cwd?: string): string {
   });
 }
 
+function runGitBuffer(args: string[]): Buffer {
+  return execFileSync("git", args, {
+    encoding: "buffer",
+    stdio: ["ignore", "pipe", "ignore"],
+    env: {
+      ...process.env,
+      GIT_CONFIG_NOSYSTEM: "1",
+      HOME: pathJoin(tempRoot, "home"),
+    },
+  });
+}
+
 async function writeSkillSeed(root: string, id: string, name: string) {
   const skillName = name.split("/").filter(Boolean).pop() || name;
   await mkdir(pathJoin(root, name), { recursive: true });
@@ -226,6 +238,85 @@ beforeAll(async () => {
   serverUrl = `http://127.0.0.1:${port}/repo.git`;
 
   liveHttpRequest = async (options) => {
+    const apiContents = options.url.match(
+      /^https:\/\/api\.github\.com\/repos\/test\/community\/contents\/(.*?)\?ref=[^&]+$/
+    );
+    if (apiContents) {
+      const requestedPath = decodeURIComponent(apiContents[1]).replace(/\/+$/, "");
+      const rows = runGit(["--git-dir", communityRemote, "ls-tree", "-r", "main"])
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => {
+          const [meta, path] = line.split("\t");
+          const [, , sha] = meta.split(/\s+/);
+          return { path, sha };
+        });
+      const prefix = requestedPath ? `${requestedPath}/` : "";
+      const entries = new Map<string, { name: string; path: string; type: string; sha: string }>();
+      for (const row of rows) {
+        if (!row.path.startsWith(prefix)) continue;
+        const remainder = row.path.slice(prefix.length);
+        const [name, ...rest] = remainder.split("/");
+        if (!name) continue;
+        const path = prefix ? `${prefix}${name}` : name;
+        entries.set(path, {
+          name,
+          path,
+          type: rest.length > 0 ? "dir" : "file",
+          sha: rest.length > 0 ? "" : row.sha,
+        });
+      }
+      const encoded = new TextEncoder().encode(JSON.stringify([...entries.values()]));
+      return {
+        data: encoded.buffer,
+        status: 200,
+        headers: { "content-type": "application/json" },
+        url: options.url,
+      };
+    }
+    const apiTree = options.url.match(
+      /^https:\/\/api\.github\.com\/repos\/test\/community\/git\/trees\/[^?]+\?recursive=1$/
+    );
+    if (apiTree) {
+      const rows = runGit(["--git-dir", communityRemote, "ls-tree", "-r", "main"])
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => {
+          const [meta, path] = line.split("\t");
+          const [mode, type, sha] = meta.split(/\s+/);
+          return { path, type, mode, sha };
+        });
+      const encoded = new TextEncoder().encode(JSON.stringify({ tree: rows }));
+      return {
+        data: encoded.buffer,
+        status: 200,
+        headers: { "content-type": "application/json" },
+        url: options.url,
+      };
+    }
+    const apiBlob = options.url.match(
+      /^https:\/\/api\.github\.com\/repos\/test\/community\/git\/blobs\/([0-9a-f]+)$/
+    );
+    if (apiBlob) {
+      const bytes = runGitBuffer([
+        "--git-dir",
+        communityRemote,
+        "cat-file",
+        "-p",
+        apiBlob[1],
+      ]);
+      const encoded = new TextEncoder().encode(
+        JSON.stringify({ content: bytes.toString("base64"), encoding: "base64" })
+      );
+      return {
+        data: encoded.buffer,
+        status: 200,
+        headers: { "content-type": "application/json" },
+        url: options.url,
+      };
+    }
     const body = options.data
       ? Buffer.from(String(options.data), "base64")
       : undefined;
@@ -379,11 +470,17 @@ describe("Android Git repository integration", () => {
     const withUpdate = checked.snapshot.skills.find(
       (skill) => skill.id === installedAlpha.id
     )!;
+    expect(withUpdate.lastCheckError).toBeNull();
     expect(withUpdate.updateStatus).toBe("update_available");
     expect(
       checked.snapshot.skills.find((skill) => skill.id === betaId)?.updateStatus
     ).toBe("local_only");
     expect(checked.notice).toContain("已跳过");
+
+    const rechecked = await repository.checkRemoteUpdates();
+    expect(
+      rechecked.snapshot.skills.find((skill) => skill.id === installedAlpha.id)?.updateStatus
+    ).toBe("update_available");
 
     const updated = await repository.updateRemoteSkills([installedAlpha.id]);
     const updatedSkill = updated.snapshot.skills.find(
@@ -392,6 +489,11 @@ describe("Android Git repository integration", () => {
     expect(updatedSkill.updateStatus).toBe("up_to_date");
     expect(updatedSkill.content).toContain("Updated upstream");
     expect(updatedSkill.tags).toEqual(["keep-me"]);
+
+    const afterUpdate = await repository.checkRemoteUpdates();
+    expect(
+      afterUpdate.snapshot.skills.find((skill) => skill.id === installedAlpha.id)?.updateStatus
+    ).toBe("up_to_date");
   });
 
   it("opens an existing clone when the network is unavailable", async () => {
