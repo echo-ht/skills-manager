@@ -460,7 +460,10 @@ describe("Android Git repository integration", () => {
       withoutBaseline.snapshot.skills.find((skill) => skill.id === installedAlpha.id)
         ?.updateStatus
     ).toBe("unknown");
-    localStorage.setItem(updateStateKey, savedUpdateStates!);
+    const baseline = await repository.establishRemoteBaseline(installedAlpha.id);
+    expect(
+      baseline.snapshot.skills.find((skill) => skill.id === installedAlpha.id)?.updateStatus
+    ).toBe("up_to_date");
 
     await repository.saveSkill({
       id: installedAlpha.id,

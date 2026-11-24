@@ -231,6 +231,15 @@ async function copyTree(source: string, destination: string): Promise<void> {
   }
 }
 
+async function gitBlobSha(bytes: Uint8Array): Promise<string> {
+  const header = new TextEncoder().encode(`blob ${bytes.length}\0`);
+  const payload = new Uint8Array(header.length + bytes.length);
+  payload.set(header);
+  payload.set(bytes, header.length);
+  const digest = await crypto.subtle.digest("SHA-1", payload);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 async function cleanupRemotePreviews(): Promise<void> {
   if (!(await exists(CACHE_ROOT))) return;
   for (const entry of await pfs.readdir(CACHE_ROOT)) {
@@ -1100,15 +1109,13 @@ export class AndroidGitRepository {
     return Array.isArray(response) ? response : [response];
   }
 
-  private async downloadGithubSkill(
+  private async collectGithubFiles(
     source: ParsedInstallSource,
     revision: string,
-    repositoryPath: string | null,
-    destination: string
-  ): Promise<void> {
+    repositoryPath: string | null
+  ): Promise<Array<{ path: string; sha: string }>> {
     const rootPath = repositoryPath ? safeRepoRelativePath(repositoryPath) : "";
     const files: Array<{ path: string; sha: string }> = [];
-
     const collect = async (remotePath: string | null) => {
       const entries = await this.githubContents(source, revision, remotePath);
       for (const entry of entries) {
@@ -1119,6 +1126,17 @@ export class AndroidGitRepository {
       }
     };
     await collect(rootPath || null);
+    return files;
+  }
+
+  private async downloadGithubSkill(
+    source: ParsedInstallSource,
+    revision: string,
+    repositoryPath: string | null,
+    destination: string
+  ): Promise<void> {
+    const rootPath = repositoryPath ? safeRepoRelativePath(repositoryPath) : "";
+    const files = await this.collectGithubFiles(source, revision, repositoryPath);
 
     if (!files.some((entry) => /(?:^|\/)skill\.md$/i.test(entry.path))) {
       throw new MobileGitError("上游已不存在这个 Skill 目录", "INVALID_REPO");
@@ -1484,6 +1502,69 @@ export class AndroidGitRepository {
               .filter(Boolean)
               .join(" ")
           : result.notice,
+    };
+  }
+
+  async establishRemoteBaseline(skillId: string): Promise<MutationResult> {
+    const skill = (await this.loadSkills()).find((candidate) => candidate.id === skillId);
+    if (!skill || skill.source.type !== "git" || !skill.source.ref) {
+      throw new MobileGitError("这个 Skill 没有可比较的 GitHub 上游", "INVALID_REPO");
+    }
+    const source = parseInstallSource(skill.source.ref);
+    source.branch = skill.source.branch || source.branch;
+    const head = await this.remoteBranchHead(source);
+    const remoteFiles = await this.collectGithubFiles(
+      source,
+      head.revision,
+      skill.source.subpath
+    );
+    if (!remoteFiles.some((file) => /(?:^|\/)skill\.md$/i.test(file.path))) {
+      throw new MobileGitError("上游已不存在这个 Skill 目录", "INVALID_REPO");
+    }
+    const rootPath = skill.source.subpath
+      ? safeRepoRelativePath(skill.source.subpath)
+      : "";
+    const remoteMap = new Map(
+      remoteFiles.map((file) => [
+        rootPath && file.path.startsWith(`${rootPath}/`)
+          ? file.path.slice(rootPath.length + 1)
+          : file.path,
+        file.sha,
+      ])
+    );
+    const localDir = join(this.dir, skill.path);
+    const localFiles = await walkFiles(localDir);
+    const localEntries = await Promise.all(
+      localFiles.map(async (file) => {
+        const relative = file.slice(localDir.length + 1);
+        return [relative, await gitBlobSha(await pfs.readFile(file))] as const;
+      })
+    );
+    const localMap = new Map(localEntries);
+    const same =
+      localMap.size === remoteMap.size &&
+      [...localMap].every(([path, sha]) => remoteMap.get(path) === sha);
+    this.setUpdates([
+      same
+        ? {
+            id: skill.id,
+            status: "up_to_date",
+            resolvedUrl: source.remoteUrl,
+            revision: head.revision,
+          }
+        : {
+            id: skill.id,
+            status: "update_available",
+            resolvedUrl: source.remoteUrl,
+            remoteRevision: head.revision,
+          },
+    ]);
+    return {
+      snapshot: await this.snapshot(),
+      pushed: true,
+      notice: same
+        ? "本地内容与上游一致，已建立更新基线。"
+        : "上游当前版本与本地内容不同，已标记为可更新。",
     };
   }
 

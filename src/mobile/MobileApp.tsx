@@ -445,6 +445,27 @@ export function MobileApp() {
     }
   };
 
+  const establishBaseline = async (skillId: string) => {
+    if (!repo || !beginOperation()) return;
+    busyRef.current = "baseline";
+    setBusy("baseline");
+    setBusyMessage("正在比较本地与上游文件…");
+    cancelOperationRef.current = () => repo.cancelNetworkOperations();
+    try {
+      const result = await repo.establishRemoteBaseline(skillId);
+      setSnapshot(result.snapshot);
+      showNotice(result.notice || "基线检查完成", "success");
+    } catch (error) {
+      showNotice(messageFor(error), "error");
+    } finally {
+      cancelOperationRef.current = null;
+      busyRef.current = null;
+      setBusyMessage("正在提交到本地 Git…");
+      setBusy(null);
+      endOperation();
+    }
+  };
+
   const syncNow = async () => {
     if (!repo || !beginOperation()) return;
     busyRef.current = "sync";
@@ -548,6 +569,17 @@ export function MobileApp() {
             onEdit={() => setSheet({ kind: "skill", skill: activeSkill })}
             onDelete={() => setSheet({ kind: "delete-skill", skill: activeSkill })}
             onUpdate={() => setSheet({ kind: "update-skills", skillIds: [activeSkill.id] })}
+            onEstablishBaseline={() => void establishBaseline(activeSkill.id)}
+            onCopyRemote={(url) => {
+              if (!navigator.clipboard) {
+                showNotice("当前环境无法访问剪贴板", "error");
+                return;
+              }
+              void navigator.clipboard
+                .writeText(url)
+                .then(() => showNotice("远程仓库地址已复制", "success"))
+                .catch(() => showNotice("复制远程仓库地址失败", "error"));
+            }}
             onTogglePreset={(presetId, included) => {
               void applyMutation(
                 () => repo.setPresetSkill(presetId, activeSkill.id, included),
@@ -653,7 +685,7 @@ export function MobileApp() {
         </nav>
       ) : null}
 
-      {busy === "mutation" ? (
+      {busy === "mutation" || busy === "baseline" ? (
         <div className="mobile-working" role="status" aria-live="polite">
           <Loader2 className="spin" size={17} />
           {busyMessage}

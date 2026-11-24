@@ -163,6 +163,7 @@ export interface MobileRepository {
     skillIds: string[],
     onProgress?: (message: string) => void
   ): Promise<MutationResult>;
+  establishRemoteBaseline(skillId: string): Promise<MutationResult>;
   cancelNetworkOperations(): Promise<void>;
 }
 

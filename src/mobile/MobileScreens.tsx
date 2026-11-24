@@ -10,6 +10,8 @@ import {
   CircleAlert,
   Cloud,
   CloudOff,
+  Copy,
+  ExternalLink,
   FileCode2,
   GitBranch,
   GitCommitHorizontal,
@@ -33,6 +35,27 @@ import {
   type RepoSnapshot,
   type SyncSummary,
 } from "./model";
+
+function githubRepositoryForSkill(skill: MobileSkill): {
+  label: string;
+  url: string;
+  raw: string;
+} | null {
+  const raw = skill.source.resolved || skill.source.ref;
+  if (!raw) return null;
+  const normalized = raw
+    .replace(/^git@github\.com:/i, "")
+    .replace(/^ssh:\/\/git@github\.com\//i, "")
+    .replace(/^https?:\/\/github\.com\//i, "");
+  const [owner, repoPart] = normalized.split("/");
+  const repo = repoPart?.replace(/\.git(?:\/.*)?$/i, "");
+  if (!owner || !repo) return null;
+  return {
+    label: `${owner}/${repo}`,
+    url: `https://github.com/${owner}/${repo}`,
+    raw,
+  };
+}
 
 function AppBar({
   title,
@@ -516,6 +539,8 @@ interface SkillDetailProps {
   onEdit: () => void;
   onDelete: () => void;
   onUpdate: () => void;
+  onEstablishBaseline: () => void;
+  onCopyRemote: (url: string) => void;
   onTogglePreset: (presetId: string, included: boolean) => void;
 }
 
@@ -527,8 +552,11 @@ export function SkillDetail({
   onEdit,
   onDelete,
   onUpdate,
+  onEstablishBaseline,
+  onCopyRemote,
   onTogglePreset,
 }: SkillDetailProps) {
+  const remoteRepository = githubRepositoryForSkill(skill);
   return (
     <div className="mobile-screen">
       <AppBar
@@ -592,13 +620,56 @@ export function SkillDetail({
               className="mobile-button mobile-button-outlined mobile-detail-update"
               type="button"
               disabled={busy}
-              onClick={onUpdate}
+              onClick={onEstablishBaseline}
             >
               <RefreshCw size={18} />
-              获取上游版本并建立基线
+              检查并建立基线
             </button>
           ) : null}
         </section>
+
+        {skill.source.type === "git" ? (
+          <section className="mobile-source-card">
+            <div className="mobile-section-heading">
+              <h2>远程仓库</h2>
+              <Github size={19} />
+            </div>
+            {remoteRepository ? (
+              <>
+                <strong className="mobile-source-name">{remoteRepository.label}</strong>
+                <a
+                  className="mobile-source-url"
+                  href={remoteRepository.url}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {remoteRepository.url}
+                  <ExternalLink size={15} />
+                </a>
+                <div className="mobile-source-grid">
+                  <span>分支</span>
+                  <strong>{skill.source.branch || "默认分支"}</strong>
+                  <span>目录</span>
+                  <strong>{skill.source.subpath || "仓库根目录"}</strong>
+                  <span>原始地址</span>
+                  <strong title={remoteRepository.raw}>{remoteRepository.raw}</strong>
+                </div>
+                <div className="mobile-source-actions">
+                  <button
+                    className="mobile-button mobile-button-outlined"
+                    type="button"
+                    onClick={() => onCopyRemote(remoteRepository.url)}
+                  >
+                    <Copy size={17} />
+                    复制仓库地址
+                  </button>
+                </div>
+              </>
+            ) : (
+              <p className="mobile-muted-copy">没有记录可用的 GitHub 上游。</p>
+            )}
+          </section>
+        ) : null}
 
         <section className="mobile-section">
           <div className="mobile-section-heading">

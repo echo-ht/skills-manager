@@ -66,6 +66,8 @@ describe("Android preview navigation", () => {
     await act(async () => skillRow.click());
     expect(container.textContent).toContain("所属 Preset");
     expect(container.textContent).toContain("SKILL.md");
+    expect(container.textContent).toContain("远程仓库");
+    expect(container.textContent).toContain("echo-ht/skills-demo");
     expect(container.querySelector("nav")).toBeNull();
 
     const back = container.querySelector<HTMLButtonElement>('button[aria-label="返回"]')!;

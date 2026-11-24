@@ -383,4 +383,21 @@ export class DemoRepository implements MobileRepository {
   }
 
   async cancelNetworkOperations(): Promise<void> {}
+
+  async establishRemoteBaseline(skillId: string): Promise<MutationResult> {
+    this.state.skills = this.state.skills.map((item) =>
+      item.id === skillId
+        ? {
+            ...item,
+            updateStatus: "up_to_date",
+            lastCheckedAt: Date.now(),
+          }
+        : item
+    );
+    return {
+      snapshot: this.state,
+      pushed: true,
+      notice: "本地内容与上游一致，已建立更新基线。",
+    };
+  }
 }

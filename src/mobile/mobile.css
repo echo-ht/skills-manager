@@ -797,6 +797,73 @@ body.mobile-body #root {
   background: var(--md-surface);
 }
 
+.mobile-source-card {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  padding: 18px;
+  border: 1px solid var(--md-outline-soft);
+  border-radius: 20px;
+  background: var(--md-surface);
+}
+
+.mobile-source-card > .mobile-section-heading svg {
+  color: var(--md-text-muted);
+}
+
+.mobile-source-name {
+  color: var(--md-text);
+  font-size: 1.05rem;
+  overflow-wrap: anywhere;
+}
+
+.mobile-source-url {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  color: var(--md-primary);
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.mobile-source-url svg {
+  flex: 0 0 auto;
+}
+
+.mobile-source-grid {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px 14px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--md-surface-muted);
+  font-size: 0.8125rem;
+}
+
+.mobile-source-grid span {
+  color: var(--md-text-muted);
+}
+
+.mobile-source-grid strong {
+  overflow: hidden;
+  color: var(--md-text-secondary);
+  font-weight: 550;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-source-actions {
+  display: flex;
+}
+
+.mobile-source-actions .mobile-button {
+  min-height: 48px;
+}
+
 .mobile-detail-summary > p {
   margin: 0;
   color: var(--md-text-secondary);
