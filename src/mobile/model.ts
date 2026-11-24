@@ -355,7 +355,11 @@ export function friendlyGitError(error: unknown): MobileGitError {
   if (/conflict|not.?fast.?forward|merge/i.test(raw)) {
     return new MobileGitError("远端仓库已有冲突修改。改动已安全保留在本地，请先处理分叉后重试。", "CONFLICT");
   }
-  if (/network|fetch|timeout|offline|failed to fetch/i.test(raw)) {
+  if (
+    /network|fetch|timeout|offline|failed to fetch|request failed|end of stream|stream reset|connection reset|broken pipe|ssl/i.test(
+      raw
+    )
+  ) {
     return new MobileGitError("无法连接 GitHub。本地内容没有被删除，恢复网络后可重试。", "NETWORK");
   }
   if (/repository|repo|not found/i.test(raw)) {

@@ -1,5 +1,5 @@
 import { Buffer } from "buffer";
-import { Capacitor, CapacitorHttp } from "@capacitor/core";
+import { Capacitor, CapacitorHttp, registerPlugin } from "@capacitor/core";
 import * as git from "isomorphic-git";
 import type { GitHttpRequest, GitHttpResponse, HttpClient } from "isomorphic-git";
 import LightningFS from "@isomorphic-git/lightning-fs";
@@ -46,6 +46,22 @@ const pfs: LightningPromiseFs = fs.promises;
 // even though Vite otherwise treats "buffer" as a browser-incompatible builtin.
 const runtime = globalThis as typeof globalThis & { Buffer?: typeof Buffer };
 runtime.Buffer ??= Buffer;
+
+interface NativeGitHttpPlugin {
+  request(options: {
+    url: string;
+    method?: string;
+    headers?: Record<string, string>;
+    data?: string;
+  }): Promise<{
+    status: number;
+    url: string;
+    headers: Record<string, string>;
+    data: string;
+  }>;
+}
+
+const NativeGitHttp = registerPlugin<NativeGitHttpPlugin>("GitHttp");
 
 function join(...parts: string[]): string {
   return parts
@@ -194,6 +210,29 @@ const nativeGitHttp: HttpClient = {
   async request(request: GitHttpRequest): Promise<GitHttpResponse> {
     try {
       const requestBody = await collectBody(request.body);
+      if (isNativeAndroid()) {
+        const response = await NativeGitHttp.request({
+          url: request.url,
+          method: request.method ?? "GET",
+          headers: {
+            ...(request.headers ?? {}),
+            "User-Agent": navigator.userAgent,
+            "Accept-Encoding": "identity",
+          },
+          data: requestBody.length ? bytesToBase64(requestBody) : undefined,
+        });
+        const bytes = response.data ? base64ToBytes(response.data) : new Uint8Array();
+        request.onProgress?.({ phase: "Receiving", loaded: bytes.length, total: bytes.length });
+        return {
+          url: response.url ?? request.url,
+          method: request.method,
+          headers: response.headers,
+          body: oneChunk(bytes),
+          statusCode: response.status,
+          statusMessage: String(response.status),
+        };
+      }
+
       const headers: Record<string, string> = {
         ...(request.headers ?? {}),
         "x-cap-user-agent": navigator.userAgent,
